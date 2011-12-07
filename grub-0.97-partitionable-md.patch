@@ -1,0 +1,11 @@
+diff -up grub-0.97/lib/device.c~ grub-0.97/lib/device.c
+--- grub-0.97/lib/device.c~	2009-07-09 11:23:48.000000000 +0200
++++ grub-0.97/lib/device.c	2009-07-09 11:29:41.000000000 +0200
+@@ -1107,6 +1107,7 @@ write_to_partition (char **map, int driv
+ 	   (strncmp(dev, "/dev/ida/", 9) == 0 ||
+ 	    strncmp(dev, "/dev/ataraid/", 13) == 0 ||
+ 	    strncmp(dev, "/dev/mapper/", 12) == 0 || 
++	    strncmp(dev, "/dev/md", 7) == 0 ||
+ 	    strncmp(dev, "/dev/cciss/", 11) == 0 ||
+ 	    strncmp(dev, "/dev/rd/", 8) == 0) ? "p" : "",
+ 	   ((partition >> 16) & 0xFF) + 1);

@@ -1,0 +1,36 @@
+From: Peter Jones
+Date: Thu, Apr 16 2009 16:16:00 -0500
+Subject: [PATCH] allocate low memory at bottom of memory instead of top.
+
+Don't allocate the low memory area above 1GB, as the kernel doesn't map that
+during early boot.
+
+diff -urpN grub-0.97/efi/x86_64/loader/linux.c.lowmem grub-0.97/efi/x86_64/loader/linux.c
+--- grub-0.97/efi/x86_64/loader/linux.c.lowmem	2009-04-16 16:56:32.000000000 -0400
++++ grub-0.97/efi/x86_64/loader/linux.c	2009-04-16 16:57:38.000000000 -0400
+@@ -169,16 +169,24 @@ allocate_pages (grub_size_t real_size, g
+ 	  && desc->num_pages >= real_mode_pages)
+ 	{
+ 	  grub_efi_physical_address_t physical_end;
++          int allocsize = real_size + mmap_size;
+ 
+           physical_end = desc->physical_start + (desc->num_pages << 12);
+ 
+           grub_dprintf ("linux", "physical_start = %x, physical_end = %x\n",
+                         (unsigned) desc->physical_start,
+                         (unsigned) physical_end);
+-          addr = physical_end - real_size - mmap_size;
++          addr = physical_end - allocsize;
+           if (addr < 0x10000)
+             continue;
+ 
++          /* the kernel wants this address to be under 1 gig.*/
++          if (desc->physical_start > 0x40000000 - allocsize)
++            continue;
++
++          if (addr > 0x40000000 - allocsize)
++            addr = 0x40000000 - allocsize;
++
+           grub_dprintf ("linux", "trying to allocate %u pages at %x\n",
+                         (unsigned) real_mode_pages, (unsigned) addr);
+           real_mode_mem = grub_efi_allocate_pages (addr, real_mode_pages);

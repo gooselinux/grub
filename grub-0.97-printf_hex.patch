@@ -1,0 +1,174 @@
+--- grub-0.97/stage2/char_io.c	2009-03-02 14:00:46.000000000 -0500
++++ grub-0.97/stage2/char_io.c	2009-03-02 14:04:16.000000000 -0500
+@@ -198,13 +198,15 @@
+     }
+ }
+ 
+-#define format_ascii(buf, val, is_hex, is_cap) ({                   \
++#define format_ascii(buf, val, is_hex, is_cap, num_pad_chars) ({    \
+         int _n = sizeof ((buf)) - 2;                                \
+         typeof(val) _nval = (val);                                  \
+         int _negative = 0;                                          \
+         int _mult = is_hex ? 16 : 10;                               \
+         char _a = is_cap ? 'A' : 'a';                               \
+-        memset((buf), '\0', sizeof ((buf)));                        \
++	int _pad = num_pad_chars; \
++		    char hex[] = "0123456789abcdef"; \
++        memset((buf), '\0', sizeof ((buf)));			    \
+         if (!(_nval > 0LL))                                         \
+             _negative = 1;                                          \
+         if (_nval == 0LL)                                           \
+@@ -214,12 +216,15 @@
+         do {                                                        \
+             int _dig = _nval % _mult;                               \
+             (buf)[_n--] = ((_dig > 9) ? _dig + _a - 10 : '0'+_dig); \
++	    if (_pad > 0) _pad--; \
+         } while (_nval /= _mult);                                   \
++	while (_pad--) \
++		(buf)[_n--] = '0'; \
+         if (_negative)                                              \
+             (buf)[_n--] = '-';                                      \
+         _mult = 0;                                                  \
+         _n++;                                                       \
+-        while (_n < sizeof ((buf)))                                 \
++        while (_n < sizeof ((buf)))				    \
+             (buf)[_mult++] = (buf)[_n++];                           \
+         if (_negative && _mult > 1)                                 \
+             ((buf)[_mult-2])++;                                     \
+@@ -236,6 +241,8 @@
+ 
+     char *str_arg;
+     int int_arg;
++    unsigned char uchar_arg;
++    unsigned ushort_arg;
+     unsigned int uint_arg;
+     signed long long_arg;
+     unsigned long ulong_arg;
+@@ -246,7 +253,9 @@
+     if (!c)
+         return 0;
+ 
+-    int is_fmt = 0, is_long = 0, is_signed = 1, is_cap = 0, restart = 1;
++    int is_fmt = 0, is_long = 0, is_signed = 1, is_cap = 0, is_zero_padded = 0;
++    int num_pad_chars = 0;
++    int restart = 1;
+     do {
+         if (restart) {
+             restart = 0;
+@@ -254,6 +263,8 @@
+             is_long = 0;
+             is_cap = 0;
+             is_signed = 1;
++	    is_zero_padded = 0;
++	    num_pad_chars = 0;
+             buf[0] = '\0';
+             pos = 0;
+         }
+@@ -279,10 +290,31 @@
+                 write_char(&str, c, &count);
+                 restart = 1;
+                 continue;
++	    case '0':
++	    	if (!is_zero_padded) {
++		    	buf[pos++] = c;
++			buf[pos] = '\0';
++			is_zero_padded++;
++			continue;
++		}
++	    case '1':
++	    case '2':
++	    case '3':
++	    case '4':
++	    case '5':
++	    case '6':
++	    case '7':
++	    case '8':
++	    case '9':
++		buf[pos++] = c;
++		buf[pos] = '\0';
++		num_pad_chars *= 10;
++		num_pad_chars += c - '0';
++		continue;
+             case 'l':
+                 buf[pos++] = c;
+                 buf[pos] = '\0';
+-                is_long ++;
++                is_long++;
+                 continue;
+             case 'L':
+                 buf[pos++] = c;
+@@ -304,13 +336,13 @@
+             case 'd':
+                 if (is_long == 0) {
+                     int_arg = va_arg(args, signed int);
+-                    format_ascii(buf, int_arg, 0, 0);
++                    format_ascii(buf, int_arg, 0, 0, 0);
+                 } else if (is_long == 1) {
+                     long_arg = va_arg(args, signed long);
+-                    format_ascii(buf, long_arg, 0, 0);
++                    format_ascii(buf, long_arg, 0, 0, 0);
+                 } else {
+                     longlong_arg = va_arg(args, signed long long);
+-                    format_ascii(buf, longlong_arg, 0, 0);
++                    format_ascii(buf, longlong_arg, 0, 0, 0);
+                 }
+                 write_str(&str, buf, &count);
+                 restart = 1;
+@@ -324,13 +356,13 @@
+             case 'U':
+                 if (is_long == 0) {
+                     uint_arg = va_arg(args, unsigned int);
+-                    format_ascii(buf, uint_arg, 0, 0);
++                    format_ascii(buf, uint_arg, 0, 0, 0);
+                 } else if (is_long == 1) {
+                     ulong_arg = va_arg(args, unsigned long);
+-                    format_ascii(buf, ulong_arg, 0, 0);
++                    format_ascii(buf, ulong_arg, 0, 0, 0);
+                 } else {
+                     ulonglong_arg = va_arg(args, unsigned long long);
+-                    format_ascii(buf, ulonglong_arg, 0, 0);
++                    format_ascii(buf, ulonglong_arg, 0, 0, 0);
+                 }
+                 write_str(&str, buf, &count);
+                 restart = 1;
+@@ -339,7 +371,8 @@
+                 is_cap = 1;
+             case 'p':
+                 ulong_arg = va_arg(args, unsigned long);
+-                format_ascii(buf, ulong_arg, 1, is_cap);
++		is_zero_padded = 1;
++                format_ascii(buf, ulong_arg, 1, is_cap, sizeof(ulong_arg));
+                 write_str(&str, is_cap ? "0X" : "0x", &count);
+                 write_str(&str, buf, &count);
+                 restart = 1;
+@@ -347,15 +380,25 @@
+             case 'X':
+                 is_cap = 1;
+             case 'x':
+-                if (is_long == 0) {
++	    	if (num_pad_chars == 2) {
++		    int i;
++		    char hex[] = "0123456789abcdef";
++		    uint_arg = va_arg(args, unsigned int);
++		    uchar_arg = uint_arg & 0xff;
++		    format_ascii(buf, uchar_arg, 1, is_cap, num_pad_chars);
++		} else if (num_pad_chars == 4) {
++		    uint_arg = va_arg(args, unsigned int);
++		    ushort_arg = uint_arg & 0xffff;
++		    format_ascii(buf, ushort_arg, 1, is_cap, num_pad_chars);
++		} else if (is_long == 0) {
+                     uint_arg = va_arg(args, unsigned int);
+-                    format_ascii(buf, uint_arg, 1, is_cap);
++                    format_ascii(buf, uint_arg, 1, is_cap, num_pad_chars);
+                 } else if (is_long == 1) {
+                     ulong_arg = va_arg(args, unsigned long);
+-                    format_ascii(buf, ulong_arg, 1, is_cap);
++                    format_ascii(buf, ulong_arg, 1, is_cap, num_pad_chars);
+                 } else {
+                     ulonglong_arg = va_arg(args, unsigned long long);
+-                    format_ascii(buf, ulonglong_arg, 1, is_cap);
++                    format_ascii(buf, ulonglong_arg, 1, is_cap, num_pad_chars);
+                 }
+                 write_str(&str, buf, &count);
+                 restart = 1;
+

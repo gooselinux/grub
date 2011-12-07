@@ -1,0 +1,80 @@
+From: Mike Travis <travis@sgi.com>
+Subject: [PATCH] Convert EFI memory map to E820 map for the operating system
+Date: Thu, 19 Aug 2010 14:08:00 -0400
+
+IT#1003573
+
+Convert EFI memory map to E820 map for the operating system
+This code is based on a Linux kernel patch submitted by Edgar Hucek 
+
+diff --exclude='*.rej' --exclude='*.orig' --exclude='*~' -Naurp grub.a/efi/efimm.c grub.b/efi/efimm.c
+--- grub.a/efi/efimm.c	2010-08-17 11:04:54.000000000 -0400
++++ grub.b/efi/efimm.c	2010-08-17 11:09:07.176704838 -0400
+@@ -265,6 +265,9 @@ grub_efi_get_memory_map (grub_efi_uintn_
+ 
+ /*
+  * Add a memory region to the kernel e820 map.
++ *
++ * Convert EFI memory map to E820 map for the operating system
++ * This code is based on a Linux kernel patch submitted by Edgar Hucek 
+  */
+ static void
+ add_memory_region (struct e820_entry *e820_map,
+@@ -274,25 +277,49 @@ add_memory_region (struct e820_entry *e8
+ 		   unsigned int type)
+ {
+   int x = *e820_nr_map;
++  static unsigned long long estart = 0ULL;
++  static unsigned long esize = 0L;
++  static unsigned int etype = -1;
++  static int merge = 0;
+ 
+-  if (x == E820_MAX)
+-    {
+-      grub_printf ("Too many entries in the memory map!\n");
+-      return;
+-    }
+-
+-  if (e820_map[x-1].addr + e820_map[x-1].size == start
++  /* merge adjacent regions of same type */
++  if ((x > 0) && e820_map[x-1].addr + e820_map[x-1].size == start
+       && e820_map[x-1].type == type)
+     {
+       e820_map[x-1].size += size;
++      estart = e820_map[x-1].addr;
++      esize  = e820_map[x-1].size;
++      etype  = e820_map[x-1].type;
++      merge++;
++      return;
+     }
+-  else
++
++    /* fill up to E820_MAX */
++    if ( x < E820_MAX )
+     {
+       e820_map[x].addr = start;
+       e820_map[x].size = size;
+       e820_map[x].type = type;
+       (*e820_nr_map)++;
++      merge=0;
++      return;
++    }
++
++    /* different type means another region didn't fit */
++    /* or same type, but there's a hole */
++    if (etype != type || (estart + esize) != start)
++    {
++      merge = 0;
++      estart = start;
++      esize = size;
++      etype = type;
++      return;
+     }
++
++    /* same type and no hole, merge it */
++    estart += esize;
++    esize += size;
++    merge++;
+ }
+ 
+ /*

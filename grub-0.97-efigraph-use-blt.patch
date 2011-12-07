@@ -1,0 +1,62 @@
+diff -up grub-0.97/efi/efigraph.c.useblt grub-0.97/efi/efigraph.c
+--- grub-0.97/efi/efigraph.c.useblt	2009-03-11 11:02:24.000000000 -0400
++++ grub-0.97/efi/efigraph.c	2009-03-11 11:02:30.000000000 -0400
+@@ -305,6 +305,24 @@ static struct bltbuf *alloc_bltbuf(grub_
+ 	return buf;
+ }
+ 
++
++#if 1
++static void
++blt_pos_to_screen_pos(struct eg *eg, struct bltbuf *bltbuf,
++                      position_t *bltpos, position_t *bltsz, position_t *pos)
++{
++    position_t phys;
++
++    position_to_phys(eg, pos, &phys);
++
++    Call_Service_10(eg->output_intf->blt, eg->output_intf, (void *)bltbuf->pixbuf,
++                    GRUB_EFI_BLT_BUFFER_TO_VIDEO,
++                    bltpos->x, bltpos->y,
++                    phys.x, phys.y,
++                    bltsz->x, bltsz->y,
++                    0);
++}
++#else
+ static void
+ blt_pos_to_screen_pos(struct eg *eg, struct bltbuf *bltbuf,
+         position_t *bltpos, position_t *bltsz, position_t *pos)
+@@ -392,6 +410,7 @@ blt_pos_to_screen_pos(struct eg *eg, str
+         }
+     }
+ }
++#endif
+ 
+ static void
+ blt_to_screen(struct eg *eg, struct bltbuf *bltbuf)
+@@ -417,25 +436,6 @@ blt_to_screen(struct eg *eg, struct bltb
+ #endif
+ }
+ 
+-
+-#if 0
+-static void
+-blt_pos_to_screen_pos(struct eg *eg, struct bltbuf *bltbuf,
+-                      position_t *bltpos, position_t *bltsz, position_t *pos)
+-{
+-    position_t phys;
+-
+-    position_to_phys(eg, pos, &phys);
+-
+-    Call_Service_10(eg->output_intf->blt, eg->output_intf, bltbuf->pixbuf,
+-                    GRUB_EFI_BLT_BUFFER_TO_VIDEO,
+-                    bltpos->x, bltpos->y,
+-                    phys.x, phys.y,
+-                    bltsz->x, bltsz->y,
+-                    0);
+-}
+-#endif
+-
+ static void
+ blt_to_screen_pos(struct eg *eg, struct bltbuf *bltbuf, position_t *pos)
+ {

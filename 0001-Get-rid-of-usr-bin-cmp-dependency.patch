@@ -1,0 +1,41 @@
+From 25a07e29651d771c6d86ab94ea9489f7475c5b48 Mon Sep 17 00:00:00 2001
+From: =?utf-8?q?Ville=20Skytt=C3=A4?= <ville.skytta@iki.fi>
+Date: Sun, 11 Jan 2009 11:50:11 +0100
+Subject: [PATCH] Get rid of /usr/bin/cmp dependency
+
+Looks like it would be easy to get rid of the diffutils dependency in grub,
+patch attached.
+
+More discussion at
+http://www.redhat.com/archives/fedora-devel-list/2008-January/msg02881.html
+
+Bug Report: https://bugzilla.redhat.com/show_bug.cgi?id=431351
+---
+ util/grub-install.in |   11 ++++++++---
+ 1 files changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/util/grub-install.in b/util/grub-install.in
+index 5ceb77d..24e4490 100644
+--- a/util/grub-install.in
++++ b/util/grub-install.in
+@@ -597,9 +597,14 @@ for file in ${grubdir}/stage1 ${grubdir}/stage2 ${grubdir}/*stage1_5; do
+     while test $count -gt 0; do
+         dump_boot_block $root_drive $img_file
+         if grep "Error [0-9]*: " $log_file >/dev/null; then
+-    	:
+-        elif cmp $file $img_file >/dev/null; then
+-    	break
++            :
++        else
++            # Use sha1sum instead of cmp to avoid a dependency on diffutils.
++            sha1=`sha1sum $file | cut -d' ' -f 1`
++            sha2=`sha1sum $img_file | cut -d' ' -f 1`
++            if test -f $file -a -f $img_file -a "$sha1" = "$sha2"; then
++                break
++            fi
+         fi
+         sleep 1
+         count=`expr $count - 1`    
+-- 
+1.5.5.6
+

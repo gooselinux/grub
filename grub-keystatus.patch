@@ -1,0 +1,627 @@
+diff --git a/efi/eficon.c b/efi/eficon.c
+index 63cc2cc..037f050 100644
+--- a/efi/eficon.c
++++ b/efi/eficon.c
+@@ -212,6 +212,13 @@ console_getkey (void)
+ }
+ 
+ int
++console_keystatus (void)
++{
++  /* Doesn't look like EFI can support this... */
++  return 0;
++}
++
++int
+ console_getxy (void)
+ {
+   grub_efi_simple_text_output_interface_t *o;
+diff --git a/grub/asmstub.c b/grub/asmstub.c
+index dac7484..f420074 100644
+--- a/grub/asmstub.c
++++ b/grub/asmstub.c
+@@ -786,6 +786,13 @@ console_getkey (void)
+   return console_translate_key (c);
+ }
+ 
++/* returns modifier status */
++int
++console_keystatus (void)
++{
++  return 0;
++}
++
+ /* returns packed values, LSB+1 is x, LSB is y */
+ int
+ console_getxy (void)
+diff --git a/stage1/stage1.S b/stage1/stage1.S
+index 985963d..3a896be 100644
+--- a/stage1/stage1.S
++++ b/stage1/stage1.S
+@@ -31,6 +31,8 @@
+ 
+ 	/* Print message string */
+ #define MSG(x)	movw $ABS(x), %si; call message
++	/* Print verbose message string */
++#define VMSG(x)
+ 
+ 	/* XXX:	binutils-2.9.1.0.x doesn't produce a short opcode for this. */
+ #define	MOV_MEM_TO_AL(x)	.byte 0xa0;  .word x
+@@ -151,7 +153,7 @@ real_start:
+ 	pushw	%dx
+ 
+ 	/* print a notification message on the screen */
+-	MSG(notification_string)
++	VMSG(notification_string)
+ 
+ 	/* do not probe LBA if the drive is a floppy */
+ 	testb	$STAGE1_BIOS_HD_FLAG, %dl
+diff --git a/stage2/asm.S b/stage2/asm.S
+index 655e707..93efa11 100644
+--- a/stage2/asm.S
++++ b/stage2/asm.S
+@@ -2096,6 +2096,37 @@ pending:
+ 	pop	%ebp
+ 	ret
+ 
++
++/*
++ * int console_keystatus (void)
++ * BIOS call "INT 16H Function 02H" to get keyboard modifier status
++ *	Call with	%ah = 0x2
++ *	Return:		%al = keyboard state:
++ *				bit 3: alt key down
++ *				bit 2: ctrl key down
++ *				bit 1: left shift key down
++ *				bit 0: right shift key down
++ */
++ENTRY(console_keystatus)
++	push	%ebp
++
++	call	EXT_C(prot_to_real)
++	.code16
++	
++	movb	$0x12, %ah
++	int	$0x16
++	movw	%ax, %dx
++
++	DATA32	call	EXT_C(real_to_prot)
++	.code32
++
++	movw	%dx, %ax
++	
++	/* Mask out numlock, capslock and insert state. */
++	andl	$0x0f0f, %eax
++	pop	%ebp
++	ret
++	
+ 	
+ /*
+  * int console_getxy (void)
+diff --git a/stage2/boot.c b/stage2/boot.c
+index ec25acf..fabebf6 100644
+--- a/stage2/boot.c
++++ b/stage2/boot.c
+@@ -287,8 +287,9 @@ load_image (char *kernel, char *arg, kernel_t suggested_type,
+ 	errnum = ERR_WONT_FIT;
+       else
+ 	{
+-	  grub_printf ("   [Linux-%s, setup=0x%x, size=0x%x]\n",
+-		       (big_linux ? "bzImage" : "zImage"), data_len, text_len);
++	  grub_verbose_printf ("   [Linux-%s, setup=0x%x, size=0x%x]\n",
++			       (big_linux ? "bzImage" : "zImage"),
++			       data_len, text_len);
+ 
+ 	  /* Video mode selection support. What a mess!  */
+ 	  /* NOTE: Even the word "mess" is not still enough to
+@@ -494,7 +495,7 @@ load_image (char *kernel, char *arg, kernel_t suggested_type,
+   mbi.syms.a.addr = 0;
+   mbi.syms.a.pad = 0;
+ 
+-  printf ("   [%s-%s", str2, str);
++  verbose_printf ("   [%s-%s", str2, str);
+ 
+   str = "";
+ 
+@@ -503,7 +504,7 @@ load_image (char *kernel, char *arg, kernel_t suggested_type,
+       if (flags & MULTIBOOT_AOUT_KLUDGE)
+ 	str = "-and-data";
+ 
+-      printf (", loadaddr=0x%x, text%s=0x%x", cur_addr, str, text_len);
++      verbose_printf (", loadaddr=0x%x, text%s=0x%x", cur_addr, str, text_len);
+ 
+       /* read text, then read data */
+       if (grub_read ((char *) RAW_ADDR (cur_addr), text_len) == text_len)
+@@ -516,9 +517,9 @@ load_image (char *kernel, char *arg, kernel_t suggested_type,
+ 	      if (align_4k)
+ 		cur_addr = (cur_addr + 0xFFF) & 0xFFFFF000;
+ 	      else
+-		printf (", C");
++		verbose_printf (", C");
+ 
+-	      printf (", data=0x%x", data_len);
++	      verbose_printf (", data=0x%x", data_len);
+ 
+ 	      if ((grub_read ((char *) RAW_ADDR (cur_addr), data_len)
+ 		   != data_len)
+@@ -532,7 +533,7 @@ load_image (char *kernel, char *arg, kernel_t suggested_type,
+ 	      memset ((char *) RAW_ADDR (cur_addr), 0, bss_len);
+ 	      cur_addr += bss_len;
+ 
+-	      printf (", bss=0x%x", bss_len);
++	      verbose_printf (", bss=0x%x", bss_len);
+ 	    }
+ 	}
+       else if (!errnum)
+@@ -552,7 +553,7 @@ load_image (char *kernel, char *arg, kernel_t suggested_type,
+ 	  *((int *) RAW_ADDR (cur_addr)) = pu.aout->a_syms;
+ 	  cur_addr += sizeof (int);
+ 	  
+-	  printf (", symtab=0x%x", pu.aout->a_syms);
++	  verbose_printf (", symtab=0x%x", pu.aout->a_syms);
+ 
+ 	  if (grub_read ((char *) RAW_ADDR (cur_addr), pu.aout->a_syms)
+ 	      == pu.aout->a_syms)
+@@ -569,7 +570,7 @@ load_image (char *kernel, char *arg, kernel_t suggested_type,
+ 
+ 		  i -= sizeof (int);
+ 
+-		  printf (", strtab=0x%x", i);
++		  verbose_printf (", strtab=0x%x", i);
+ 
+ 		  symtab_err = (grub_read ((char *) RAW_ADDR (cur_addr), i)
+ 				!= i);
+@@ -583,7 +584,7 @@ load_image (char *kernel, char *arg, kernel_t suggested_type,
+ 
+ 	  if (symtab_err)
+ 	    {
+-	      printf ("(bad)");
++	      verbose_printf ("(bad)");
+ 	      cur_addr = orig_addr;
+ 	      mbi.syms.a.tabsize = 0;
+ 	      mbi.syms.a.strsize = 0;
+@@ -637,7 +638,7 @@ load_image (char *kernel, char *arg, kernel_t suggested_type,
+ 	      /* mark memory as used */
+ 	      if (cur_addr < memaddr + memsiz)
+ 		cur_addr = memaddr + memsiz;
+-	      printf (", <0x%x:0x%x:0x%x>", memaddr, filesiz,
++	      verbose_printf (", <0x%x:0x%x:0x%x>", memaddr, filesiz,
+ 		      memsiz - filesiz);
+ 	      /* increment number of segments */
+ 	      loaded++;
+@@ -683,7 +684,7 @@ load_image (char *kernel, char *arg, kernel_t suggested_type,
+ 		  shdr = (Elf32_Shdr *) mbi.syms.e.addr;
+ 		  cur_addr += tab_size;
+ 		  
+-		  printf (", shtab=0x%x", cur_addr);
++		  verbose_printf (", shtab=0x%x", cur_addr);
+   		  
+ 		  for (i = 0; i < mbi.syms.e.num; i++)
+ 		    {
+@@ -725,7 +726,7 @@ load_image (char *kernel, char *arg, kernel_t suggested_type,
+ 	      
+ 	      if (symtab_err) 
+ 		{
+-		  printf ("(bad)");
++		  verbose_printf ("(bad)");
+ 		  mbi.syms.e.num = 0;
+ 		  mbi.syms.e.size = 0;
+ 		  mbi.syms.e.addr = 0;
+@@ -740,7 +741,7 @@ load_image (char *kernel, char *arg, kernel_t suggested_type,
+ 
+   if (! errnum)
+     {
+-      grub_printf (", entry=0x%x]\n", (unsigned) entry_addr);
++      grub_verbose_printf (", entry=0x%x]\n", (unsigned) entry_addr);
+       
+       /* If the entry address is physically different from that of the ELF
+ 	 header, correct it here.  */
+@@ -785,7 +786,7 @@ load_module (char *module, char *arg)
+       return 0;
+     }
+ 
+-  printf ("   [Multiboot-module @ 0x%x, 0x%x bytes]\n", cur_addr, len);
++  verbose_printf ("   [Multiboot-module @ 0x%x, 0x%x bytes]\n", cur_addr, len);
+ 
+   /* these two simply need to be set if any modules are loaded at all */
+   mbi.flags |= MB_INFO_MODS;
+@@ -856,7 +857,7 @@ load_initrd (char *initrd)
+   moveto -= 0x10000;
+   memmove ((void *) RAW_ADDR (moveto), (void *) cur_addr, len);
+ 
+-  printf ("   [Linux-initrd @ 0x%x, 0x%x bytes]\n", moveto, len);
++  verbose_printf ("   [Linux-initrd @ 0x%x, 0x%x bytes]\n", moveto, len);
+ 
+   /* FIXME: Should check if the kernel supports INITRD.  */
+   lh->ramdisk_image = RAW_ADDR (moveto);
+diff --git a/stage2/builtins.c b/stage2/builtins.c
+index 3333ae3..dd70c61 100644
+--- a/stage2/builtins.c
++++ b/stage2/builtins.c
+@@ -57,6 +57,8 @@ static int bootdev;
+    when it is turned off.  */
+ int debug = 0;
+ int debug_graphics = 0;
++/* Print what we're booting */
++int grub_verbose = 0;
+ /* The default entry.  */
+ int default_entry = 0;
+ /* The fallback entry.  */
+@@ -825,6 +827,34 @@ static struct builtin builtin_debug =
+ };
+ 
+ 
++/* verbose */
++static int
++verbose_func (char *arg, int flags)
++{
++  if (grub_verbose)
++    {
++      grub_verbose = 0;
++      grub_printf (" Verbose mode is turned off\n");
++    }
++  else
++    {
++      grub_verbose = 1;
++      grub_printf (" Verbose mode is turned on\n");
++    }
++
++  return 0;
++}
++
++static struct builtin builtin_verbose =
++{
++  "verbose",
++  verbose_func,
++  BUILTIN_CMDLINE | BUILTIN_MENU,
++  "verbose",
++  "Turn on/off verbose output."
++};
++
++
+ #if !defined(SUPPORT_DISKLESS) && !defined(GRUB_UTIL) && !defined(PLATFORM_EFI)
+ static int savedefault_helper(int);
+ #endif
+@@ -3420,7 +3450,8 @@ real_root_func (char *arg, int attempt_mount)
+ 	return 1;
+       
+       /* Print the type of the filesystem.  */
+-      print_fsys_type ();
++      if (grub_verbose)
++	print_fsys_type ();
+     }
+   
+   return 0;
+@@ -5216,5 +5247,6 @@ struct builtin *builtin_table[] =
+   &builtin_uppermem,
+   &builtin_vbeprobe,
+ #endif
++  &builtin_verbose,
+   0
+ };
+diff --git a/stage2/char_io.c b/stage2/char_io.c
+index f1313cb..3060b8a 100644
+--- a/stage2/char_io.c
++++ b/stage2/char_io.c
+@@ -39,6 +39,7 @@ struct term_entry term_table[] =
+       console_putchar,
+       console_checkkey,
+       console_getkey,
++      console_keystatus,
+       console_getxy,
+       console_gotoxy,
+       console_cls,
+@@ -57,6 +58,7 @@ struct term_entry term_table[] =
+       serial_putchar,
+       serial_checkkey,
+       serial_getkey,
++      0,
+       serial_getxy,
+       serial_gotoxy,
+       serial_cls,
+@@ -75,6 +77,7 @@ struct term_entry term_table[] =
+       hercules_putchar,
+       console_checkkey,
+       console_getkey,
++      console_keystatus,
+       hercules_getxy,
+       hercules_gotoxy,
+       hercules_cls,
+@@ -92,6 +95,7 @@ struct term_entry term_table[] =
+       graphics_putchar, /* putchar */
+       console_checkkey, /* checkkey */
+       console_getkey, /* getkey */
++      console_keystatus, /* keystatus */
+       graphics_getxy, /* getxy */
+       graphics_gotoxy, /* gotoxy */
+       graphics_cls, /* cls */
+@@ -1166,6 +1170,16 @@ checkkey (void)
+ {
+   return current_term->checkkey ();
+ }
++
++/* Return keyboard modifier status. */
++int
++keystatus (void)
++{
++  if (current_term->keystatus)
++    return current_term->keystatus ();
++  else 
++    return 0;
++}
+ #endif /* ! STAGE1_5 */
+ 
+ /* Display an ASCII character.  */
+diff --git a/stage2/cmdline.c b/stage2/cmdline.c
+index 044fd02..cb41eda 100644
+--- a/stage2/cmdline.c
++++ b/stage2/cmdline.c
+@@ -237,12 +237,12 @@ run_script (char *script, char *heap)
+       builtin = find_command (heap);
+       if (! builtin)
+ 	{
+-	  grub_printf ("%s\n", old_entry);
++	  grub_verbose_printf ("%s\n", old_entry);
+ 	  continue;
+ 	}
+ 
+       if (! (builtin->flags & BUILTIN_NO_ECHO))
+-	grub_printf ("%s\n", old_entry);
++	grub_verbose_printf ("%s\n", old_entry);
+ 
+       /* If BUILTIN cannot be run in the command-line, skip it.  */
+       if (! (builtin->flags & BUILTIN_CMDLINE))
+diff --git a/stage2/shared.h b/stage2/shared.h
+index 829a25f..c428370 100644
+--- a/stage2/shared.h
++++ b/stage2/shared.h
+@@ -635,6 +635,13 @@ extern int debug;
+ extern int debug_graphics;
+ #endif /* STAGE1_5 */
+ 
++/* Verbose mode flag. */
++extern int grub_verbose;
++#define verbose_printf(format...) \
++  do { if (grub_verbose) printf(format); } while (0)
++#define grub_verbose_printf(format...) \
++  do { if (grub_verbose) grub_printf(format); } while (0)
++
+ extern unsigned long current_drive;
+ extern unsigned long current_partition;
+ 
+@@ -810,6 +817,10 @@ int getkey (void);
+    available. */
+ int checkkey (void);
+ 
++/* Return keyboard modifier status. */
++int
++keystatus (void);
++
+ /* Low-level disk I/O */
+ int get_diskinfo (int drive, struct geometry *geometry);
+ int biosdisk (int subfunc, int drive, struct geometry *geometry,
+diff --git a/stage2/stage1_5.c b/stage2/stage1_5.c
+index 5c45d4c..c2d9632 100644
+--- a/stage2/stage1_5.c
++++ b/stage2/stage1_5.c
+@@ -30,7 +30,8 @@ disk_read_savesect_func (int sector, int offset, int length)
+ void
+ cmain (void)
+ {
+-  grub_printf ("\n\nGRUB loading, please wait...\n");
++  if (0)
++    grub_printf ("\n\nGRUB loading, please wait...\n");
+ 
+   /*
+    *  Here load the true second-stage boot-loader.
+diff --git a/stage2/stage2.c b/stage2/stage2.c
+index f8bccf8..aef7c63 100644
+--- a/stage2/stage2.c
++++ b/stage2/stage2.c
+@@ -235,7 +235,8 @@ run_menu (char *menu_entries, char *config_entries, int num_entries,
+   char *cur_entry = 0;
+   struct term_entry *prev_term = NULL;
+ 
+-  cls();
++  if (grub_verbose)
++    cls();
+ 
+   /*
+    *  Main loop for menu UI.
+@@ -264,11 +265,11 @@ restart:
+       /* Get current time.  */
+       while ((time1 = getrtsecs ()) == 0xFF)
+ 	;
+-      grub_printf("\rPress any key to enter the menu\n\n\n");
++      grub_verbose_printf("\rPress any key to enter the menu\n\n\n");
+ 
+       while (1)
+ 	{
+-	  /* Check if ESC is pressed.  */
++	  /* Check if any key is pressed */
+ 	  if (checkkey () != -1)
+ 	    {
+ 	      grub_timeout = -1;
+@@ -277,6 +278,14 @@ restart:
+ 	      break;
+ 	    }
+ 
++	  /* See if a modifier key is held down.  */
++	  if (keystatus () != 0)
++	    {
++	      grub_timeout = -1;
++	      show_menu = 1;
++	      break;
++	    }
++
+ 	  /* If GRUB_TIMEOUT is expired, boot the default entry.  */
+ 	  if (grub_timeout >=0
+ 	      && (time1 = getrtsecs ()) != time2
+@@ -292,9 +301,9 @@ restart:
+ 	      grub_timeout--;
+ 	      
+ 	      /* Print a message.  */
+-	      grub_printf ("\rBooting %s in %d seconds...",
+-			   get_entry(menu_entries, first_entry + entryno, 0),
+-			   grub_timeout);
++	      grub_verbose_printf ("\rBooting %s in %d seconds...",
++				   get_entry(menu_entries, first_entry + entryno, 0),
++				   grub_timeout);
+ 	    }
+ 	}
+     }
+@@ -811,8 +820,11 @@ restart:
+   
+  boot_entry:
+   
+-  cls ();
+-  setcursor (1);
++  if (grub_verbose || show_menu)
++    {
++      cls ();
++      setcursor (1);
++    }
+   /* if our terminal needed initialization, we should shut it down
+    * before booting the kernel, but we want to save what it was so
+    * we can come back if needed */
+@@ -826,10 +838,10 @@ restart:
+   while (1)
+     {
+       if (config_entries)
+-	printf ("  Booting \'%s\'\n\n",
++	verbose_printf ("  Booting \'%s\'\n\n",
+ 		get_entry (menu_entries, first_entry + entryno, 0));
+       else
+-	printf ("  Booting command-list\n\n");
++	verbose_printf ("  Booting command-list\n\n");
+ 
+       if (! cur_entry)
+ 	cur_entry = get_entry (config_entries, first_entry + entryno, 1);
+@@ -1144,6 +1156,7 @@ cmain (void)
+ 	  /* If no acceptable config file, goto command-line, starting
+ 	     heap from where the config entries would have been stored
+ 	     if there were any.  */
++	  grub_verbose = 1;
+ 	  enter_cmdline (config_entries, 1);
+ 	}
+       else
+diff --git a/stage2/start.S b/stage2/start.S
+index 9a7d504..7a6652f 100644
+--- a/stage2/start.S
++++ b/stage2/start.S
+@@ -39,6 +39,9 @@
+ 	
+ 	/* Print message string */
+ #define MSG(x)	movw $ABS(x), %si; call message
++	
++	/* Print verbose message string */
++#define VMSG(x)
+ 
+ 	.file	"start.S"
+ 
+@@ -67,9 +70,9 @@ _start:
+ 
+ 	/* print a notification message on the screen */
+ 	pushw	%si
+-	MSG(notification_string)
++	VMSG(notification_string)
+ 	popw	%si
+-	
++
+ 	/* this sets up for the first run through "bootloop" */
+ 	movw	$ABS(firstlist - BOOTSEC_LISTSIZE), %di
+ 
+@@ -291,9 +294,9 @@ copy_buffer:
+ 	movsb		/* this runs the actual copy */
+ 
+ 	/* restore addressing regs and print a dot with correct DS 
+-	   (MSG modifies SI, which is saved, and unused AX and BX) */
++	   (VMSG modifies SI, which is saved, and unused AX and BX) */
+ 	popw	%ds
+-	MSG(notification_step)
++	VMSG(notification_step)
+ 	popa
+ 
+ 	/* check if finished with this dataset */
+@@ -310,7 +313,7 @@ copy_buffer:
+ 
+ bootit:
+ 	/* print a newline */
+-	MSG(notification_done)
++	VMSG(notification_done)
+ 	popw	%dx	/* this makes sure %dl is our "boot" drive */
+ #ifdef STAGE1_5
+ 	ljmp	$0, $0x2200
+diff --git a/stage2/term.h b/stage2/term.h
+index 8ed8b9d..803de58 100644
+--- a/stage2/term.h
++++ b/stage2/term.h
+@@ -54,6 +54,12 @@ typedef enum
+ /* Set when the terminal needs to be initialized.  */
+ #define TERM_NEED_INIT		(1 << 16)
+ 
++/* Bitmasks for modifier keys returned by term->keystatus(). */
++#define TERM_STATUS_ALT		(1 << 3)
++#define TERM_STATUS_CTRL	(1 << 2)
++#define TERM_STATUS_LEFT_SHIFT	(1 << 1)
++#define TERM_STATUS_RIGHT_SHIFT	(1 << 0)
++
+ struct term_entry
+ {
+   /* The name of a terminal.  */
+@@ -68,6 +74,8 @@ struct term_entry
+   int (*checkkey) (void);
+   /* Get a character.  */
+   int (*getkey) (void);
++  /* Get keyboard modifier status.  */
++  int (*keystatus) (void);
+   /* Get the cursor position. The return value is ((X << 8) | Y).  */
+   int (*getxy) (void);
+   /* Go to the position (X, Y).  */
+@@ -103,6 +111,7 @@ void console_putchar (int c);
+ #ifndef STAGE1_5
+ int console_checkkey (void);
+ int console_getkey (void);
++int console_keystatus (void);
+ int console_getxy (void);
+ void console_gotoxy (int x, int y);
+ void console_cls (void);
+diff -up grub-0.97/stage2/stage2.c.fix-plymouth-patch grub-0.97/stage2/stage2.c
+--- grub-0.97/stage2/stage2.c.fix-plymouth-patch	2008-09-30 17:00:18.000000000 -0400
++++ grub-0.97/stage2/stage2.c	2008-09-30 17:00:58.000000000 -0400
+@@ -258,14 +258,19 @@ restart:
+      interface. */
+   if (grub_timeout < 0)
+     show_menu = 1;
+-  
++
+   /* If SHOW_MENU is false, don't display the menu until ESC is pressed.  */
+   if (! show_menu)
+     {
++      /* Don't show the "Booting in blah seconds message" if the timeout is 0 */
++      int print_message = grub_timeout != 0;
++
+       /* Get current time.  */
+       while ((time1 = getrtsecs ()) == 0xFF)
+ 	;
+-      grub_verbose_printf("\rPress any key to enter the menu\n\n\n");
++
++      if (print_message)
++	grub_printf("\rPress any key to enter the menu\n\n\n");
+ 
+       while (1)
+ 	{
+@@ -301,9 +306,10 @@ restart:
+ 	      grub_timeout--;
+ 	      
+ 	      /* Print a message.  */
+-	      grub_verbose_printf ("\rBooting %s in %d seconds...",
+-				   get_entry(menu_entries, first_entry + entryno, 0),
+-				   grub_timeout);
++	      if (print_message)
++		grub_printf ("\rBooting %s in %d seconds...",
++		             get_entry(menu_entries, first_entry + entryno, 0),
++		             grub_timeout);
+ 	    }
+ 	}
+     }

@@ -1,0 +1,16 @@
+Index: stage2/fsys_xfs.c
+===================================================================
+RCS file: /cvsroot/grub/grub/stage2/fsys_xfs.c,v
+retrieving revision 1.4
+diff -u -b -B -r1.4 fsys_xfs.c
+--- grub-0.97/stage2/fsys_xfs.c	18 Jan 2004 19:47:18 -0000	1.4
++++ grub-0.97/stage2/fsys_xfs.c	28 Apr 2005 23:39:08 -0000
+@@ -334,7 +334,7 @@
+ {
+ 	int namelen = 1;
+ 	int toread;
+-	static char *usual[2] = {".", ".."};
++	static char usual[2][3] = {".", ".."};
+ 	static xfs_dir2_sf_entry_t *sfe;
+ 	char *name = usual[0];
+ 

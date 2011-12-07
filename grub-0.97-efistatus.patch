@@ -1,0 +1,15 @@
+From: Peter Jones <pjones@redhat.com>
+Date: Mon, 6 APR 2009 10:22:00 +0500
+Subject: [PATCH] Make sure EFI_STATUS is defined on ia32.
+
+diff -urpN grub-0.97/efi/grub/efi/eficall.h.status grub-0.97/efi/grub/efi/eficall.h
+--- grub-0.97/efi/grub/efi/eficall.h.status	2009-04-06 10:18:39.000000000 -0400
++++ grub-0.97/efi/grub/efi/eficall.h	2009-04-06 10:18:58.000000000 -0400
+@@ -145,6 +145,7 @@ EFI_STATUS x64_call10(unsigned long func
+ 
+ #else
+ 
++typedef long EFI_STATUS;
+ #define Call_Service(func)                      func()
+ #define Call_Service_1(func,a)                  func(a)
+ #define Call_Service_2(func,a,b)                func(a,b)

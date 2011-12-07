@@ -1,0 +1,22 @@
+diff -u -r -p grub-0.97/stage2/builtins.c grub.fixed/stage2/builtins.c
+--- grub-0.97/stage2/builtins.c	2005-02-15 22:58:23.000000000 +0100
++++ grub.fixed/stage2/builtins.c	2007-12-07 22:23:01.000000000 +0100
+@@ -3830,15 +3830,15 @@ setup_func (char *arg, int flags)
+ 	{
+ 	  char tmp[16];
+ 	  grub_sprintf (tmp, ",%d", (partition >> 16) & 0xFF);
+-	  grub_strncat (device, tmp, 256);
++	  grub_strncat (device, tmp, 16);
+ 	}
+       if ((partition & 0x00FF00) != 0x00FF00)
+ 	{
+ 	  char tmp[16];
+ 	  grub_sprintf (tmp, ",%c", 'a' + ((partition >> 8) & 0xFF));
+-	  grub_strncat (device, tmp, 256);
++	  grub_strncat (device, tmp, 16);
+ 	}
+-      grub_strncat (device, ")", 256);
++      grub_strncat (device, ")", 16);
+     }
+   
+   int embed_stage1_5 (char *stage1_5, int drive, int partition)

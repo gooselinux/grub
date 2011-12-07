@@ -1,0 +1,116 @@
+From ec3a024cccdc6002fd47874b631cfdc814f52e39 Mon Sep 17 00:00:00 2001
+From: Peter Jones <pjones@redhat.com>
+Date: Mon, 12 Jul 2010 13:52:03 -0400
+Subject: [PATCH] Actually invert the highlighted line in the menu (rhbz#613153)
+
+If you don't invert the bits, the bits aren't inverted. This patch
+inverts the bits when "invert" is true.
+
+"set" in graphics_cursor() tells us whether the cursor is on that char.
+---
+ efi/efigraph.c    |   25 +++++++++++++------------
+ efi/efiuga.c      |   23 ++++++++++++-----------
+ stage2/graphics.c |    8 ++++----
+ 3 files changed, 29 insertions(+), 27 deletions(-)
+
+diff --git a/efi/efigraph.c b/efi/efigraph.c
+index e1ba267..36fcda1 100644
+--- a/efi/efigraph.c
++++ b/efi/efigraph.c
+@@ -676,7 +676,7 @@ cursor(struct graphics_backend *backend, int set)
+     offset = fpos.y * screensz.x + fpos.x;
+ 
+     if (set)
+-        text[offset] |= 0x200;
++        text[offset] |= 0x0200;
+ 
+     graphics_clbl(fpos.x, fpos.y, 1, 1, 1);
+ 
+@@ -954,18 +954,19 @@ bltbuf_draw_character(struct graphics_backend *backend,
+             int bit = glyph[glyphpos.y] & (1 << ((fontsz.x-1) - glyphpos.x));
+             int idx = -1;
+ 
+-            if (set)
+-                idx = bit ? 0 : 15;
+-            else
++            if (!set) {
+                 if (invert)
+-                idx = bit ? 15 : 0;
+-            else if (bit)
+-                idx = 15;
+-
+-            if (idx == -1) {
+-                if (is_shadow_pixel(screensz, charpos, glyphpos, fontsz) ||
+-                        !eg->background)
+-                    idx = invert ? 15 : 0;
++                    idx = bit ? 0 : 15;
++                else if (bit)
++                    idx = 15;
++
++                if (idx == -1) {
++                    if (is_shadow_pixel(screensz, charpos, glyphpos, fontsz) ||
++                            !eg->background)
++                        idx = invert ? 15 : 0;
++                }
++            } else {
++                idx = bit ? 0 : 15;
+             }
+ 
+             if (idx != -1)
+diff --git a/efi/efiuga.c b/efi/efiuga.c
+index 063d3b2..b762eb8 100644
+--- a/efi/efiuga.c
++++ b/efi/efiuga.c
+@@ -671,18 +671,19 @@ bltbuf_draw_character(struct graphics_backend *backend,
+             int bit = glyph[glyphpos.y] & (1 << ((fontsz.x-1) - glyphpos.x));
+             int idx = -1;
+ 
+-            if (set)
+-                idx = bit ? 0 : 15;
+-            else
++            if (!set) {
+                 if (invert)
+-                idx = bit ? 15 : 0;
+-            else if (bit)
+-                idx = 15;
+-
+-            if (idx == -1) {
+-                if (is_shadow_pixel(screensz, charpos, glyphpos, fontsz) ||
+-                        !uga->background)
+-                    idx = invert ? 15 : 0;
++                    idx = bit ? 0 : 15;
++                else if (bit)
++                    idx = 15;
++
++                if (idx == -1) {
++                    if (is_shadow_pixel(screensz, charpos, glyphpos, fontsz) ||
++                            !uga->background)
++                        idx = invert ? 15 : 0;
++                }
++            } else {
++                idx = bit ? 0 : 15;
+             }
+ 
+             if (idx != -1)
+diff --git a/stage2/graphics.c b/stage2/graphics.c
+index 7f943f7..81109ae 100644
+--- a/stage2/graphics.c
++++ b/stage2/graphics.c
+@@ -540,10 +540,10 @@ void graphics_cursor(int set) {
+                 offset += 80;
+             }
+             else {
+-                chr[i     ] = mask;
+-                chr[16 + i] = mask;
+-                chr[32 + i] = mask;
+-                chr[48 + i] = mask;
++                chr[i     ] = ~mask;
++                chr[16 + i] = ~mask;
++                chr[32 + i] = ~mask;
++                chr[48 + i] = ~mask;
+             }
+         }
+     }
+-- 
+1.7.1.1
+

@@ -1,0 +1,2005 @@
+From f344803d5e03b81e06a882df5745014a0d5b1629 Mon Sep 17 00:00:00 2001
+From: Peter Jones <pjones@redhat.com>
+Date: Mon, 19 Jul 2010 17:28:53 -0400
+Subject: [PATCH 2/2] Make "device" on EFI allow you to specify device by efi device path (#598572)
+
+Make it so we can rename devices at runtime (from the config) on UEFI
+so we can map everything consistently accross reboots.
+---
+ efi/Makefile.am     |    2 +-
+ efi/eficore.c       |  420 ----------------------
+ efi/efidisk.c       |  268 ++++++++++-----
+ efi/efidp.c         |  985 +++++++++++++++++++++++++++++++++++++++++++++++++++
+ efi/efimisc.c       |   73 ++++
+ efi/grub/efi/api.h  |   14 +-
+ efi/grub/efi/misc.h |   12 +
+ efi/grub/misc.h     |    4 +
+ stage2/builtins.c   |   37 ++-
+ stage2/shared.h     |    2 +
+ 10 files changed, 1295 insertions(+), 522 deletions(-)
+ create mode 100644 efi/efidp.c
+
+diff --git a/efi/Makefile.am b/efi/Makefile.am
+index d856040..4cffe7d 100644
+--- a/efi/Makefile.am
++++ b/efi/Makefile.am
+@@ -68,7 +68,7 @@ RELOC_FLAGS = $(STAGE2_CFLAGS) -I$(top_srcdir)/stage1 \
+ 
+ noinst_LIBRARIES = libgrubefi.a
+ libgrubefi_a_SOURCES = $(EFI_ARCH)/callwrap.c eficore.c efimm.c efimisc.c \
+-	eficon.c efidisk.c graphics.c efigraph.c efiuga.c \
++	eficon.c efidisk.c graphics.c efigraph.c efiuga.c efidp.c \
+ 	font_8x16.c efiserial.c $(EFI_ARCH)/loader/linux.c efichainloader.c \
+ 	xpm.c pxe.c efitftp.c
+ libgrubefi_a_CFLAGS = $(RELOC_FLAGS) -nostdinc
+diff --git a/efi/eficore.c b/efi/eficore.c
+index f763be6..5141c53 100644
+--- a/efi/eficore.c
++++ b/efi/eficore.c
+@@ -229,423 +229,3 @@ grub_efi_get_device_path (grub_efi_handle_t handle)
+ 				 GRUB_EFI_OPEN_PROTOCOL_GET_PROTOCOL);
+ }
+ 
+-/* Print the chain of Device Path nodes. This is mainly for debugging. */
+-void
+-grub_efi_print_device_path (grub_efi_device_path_t *dp)
+-{
+-  while (1)
+-    {
+-      grub_efi_uint8_t type = GRUB_EFI_DEVICE_PATH_TYPE (dp);
+-      grub_efi_uint8_t subtype = GRUB_EFI_DEVICE_PATH_SUBTYPE (dp);
+-      grub_efi_uint16_t len = GRUB_EFI_DEVICE_PATH_LENGTH (dp);
+-
+-      switch (type)
+-	{
+-	case GRUB_EFI_END_DEVICE_PATH_TYPE:
+-	  switch (subtype)
+-	    {
+-	    case GRUB_EFI_END_ENTIRE_DEVICE_PATH_SUBTYPE:
+-	      grub_printf ("/EndEntire\n");
+-	      //grub_putchar ('\n');
+-	      break;
+-	    case GRUB_EFI_END_THIS_DEVICE_PATH_SUBTYPE:
+-	      grub_printf ("/EndThis\n");
+-	      //grub_putchar ('\n');
+-	      break;
+-	    default:
+-	      grub_printf ("/EndUnknown(%x)\n", (unsigned) subtype);
+-	      break;
+-	    }
+-	  break;
+-
+-	case GRUB_EFI_HARDWARE_DEVICE_PATH_TYPE:
+-	  switch (subtype)
+-	    {
+-	    case GRUB_EFI_PCI_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_pci_device_path_t pci;
+-		grub_memcpy (&pci, dp, len);
+-		grub_printf ("/PCI(%x,%x)",
+-			     (unsigned) pci.function, (unsigned) pci.device);
+-	      }
+-	      break;
+-	    case GRUB_EFI_PCCARD_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_pccard_device_path_t pccard;
+-		grub_memcpy (&pccard, dp, len);
+-		grub_printf ("/PCCARD(%x)",
+-			     (unsigned) pccard.function);
+-	      }
+-	      break;
+-	    case GRUB_EFI_MEMORY_MAPPED_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_memory_mapped_device_path_t mmapped;
+-		grub_memcpy (&mmapped, dp, len);
+-		grub_printf ("/MMap(%x,%llx,%llx)",
+-			     (unsigned) mmapped.memory_type,
+-			     mmapped.start_address,
+-			     mmapped.end_address);
+-	      }
+-	      break;
+-	    case GRUB_EFI_VENDOR_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_vendor_device_path_t vendor;
+-		grub_memcpy (&vendor, dp, sizeof (vendor));
+-		grub_printf ("/Vendor(%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x)",
+-			     (unsigned) vendor.vendor_guid.data1,
+-			     (unsigned) vendor.vendor_guid.data2,
+-			     (unsigned) vendor.vendor_guid.data3,
+-			     (unsigned) vendor.vendor_guid.data4[0],
+-			     (unsigned) vendor.vendor_guid.data4[1],
+-			     (unsigned) vendor.vendor_guid.data4[2],
+-			     (unsigned) vendor.vendor_guid.data4[3],
+-			     (unsigned) vendor.vendor_guid.data4[4],
+-			     (unsigned) vendor.vendor_guid.data4[5],
+-			     (unsigned) vendor.vendor_guid.data4[6],
+-			     (unsigned) vendor.vendor_guid.data4[7]);
+-	      }
+-	      break;
+-	    case GRUB_EFI_CONTROLLER_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_controller_device_path_t controller;
+-		grub_memcpy (&controller, dp, len);
+-		grub_printf ("/Ctrl(%x)",
+-			     (unsigned) controller.controller_number);
+-	      }
+-	      break;
+-	    default:
+-	      grub_printf ("/UnknownHW(%x)", (unsigned) subtype);
+-	      break;
+-	    }
+-	  break;
+-
+-	case GRUB_EFI_ACPI_DEVICE_PATH_TYPE:
+-	  switch (subtype)
+-	    {
+-	    case GRUB_EFI_ACPI_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_acpi_device_path_t acpi;
+-		grub_memcpy (&acpi, dp, len);
+-		grub_printf ("/ACPI(%x,%x)",
+-			     (unsigned) acpi.hid,
+-			     (unsigned) acpi.uid);
+-	      }
+-	      break;
+-	    case GRUB_EFI_EXPANDED_ACPI_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_expanded_acpi_device_path_t eacpi;
+-		grub_memcpy (&eacpi, dp, sizeof (eacpi));
+-		grub_printf ("/ACPI(");
+-
+-		if (GRUB_EFI_EXPANDED_ACPI_HIDSTR (dp)[0] == '\0')
+-		  grub_printf ("%x,", (unsigned) eacpi.hid);
+-		else
+-		  grub_printf ("%s,", GRUB_EFI_EXPANDED_ACPI_HIDSTR (dp));
+-
+-		if (GRUB_EFI_EXPANDED_ACPI_UIDSTR (dp)[0] == '\0')
+-		  grub_printf ("%x,", (unsigned) eacpi.uid);
+-		else
+-		  grub_printf ("%s,", GRUB_EFI_EXPANDED_ACPI_UIDSTR (dp));
+-
+-		if (GRUB_EFI_EXPANDED_ACPI_CIDSTR (dp)[0] == '\0')
+-		  grub_printf ("%x)", (unsigned) eacpi.cid);
+-		else
+-		  grub_printf ("%s)", GRUB_EFI_EXPANDED_ACPI_CIDSTR (dp));
+-	      }
+-	      break;
+-	    default:
+-	      grub_printf ("/UnknownACPI(%x)", (unsigned) subtype);
+-	      break;
+-	    }
+-	  break;
+-
+-	case GRUB_EFI_MESSAGING_DEVICE_PATH_TYPE:
+-	  switch (subtype)
+-	    {
+-	    case GRUB_EFI_ATAPI_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_atapi_device_path_t atapi;
+-		grub_memcpy (&atapi, dp, len);
+-		grub_printf ("/ATAPI(%x,%x,%x)",
+-			     (unsigned) atapi.primary_secondary,
+-			     (unsigned) atapi.slave_master,
+-			     (unsigned) atapi.lun);
+-	      }
+-	      break;
+-	    case GRUB_EFI_SCSI_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_scsi_device_path_t scsi;
+-		grub_memcpy (&scsi, dp, len);
+-		grub_printf ("/SCSI(%x,%x)",
+-			     (unsigned) scsi.pun,
+-			     (unsigned) scsi.lun);
+-	      }
+-	      break;
+-	    case GRUB_EFI_FIBRE_CHANNEL_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_fibre_channel_device_path_t fc;
+-		grub_memcpy (&fc, dp, len);
+-		grub_printf ("/FibreChannel(%llx,%llx)",
+-			     fc.wwn, fc.lun);
+-	      }
+-	      break;
+-	    case GRUB_EFI_1394_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_1394_device_path_t firewire;
+-		grub_memcpy (&firewire, dp, len);
+-		grub_printf ("/1394(%llx)", firewire.guid);
+-	      }
+-	      break;
+-	    case GRUB_EFI_USB_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_usb_device_path_t usb;
+-		grub_memcpy (&usb, dp, len);
+-		grub_printf ("/USB(%x,%x)",
+-			     (unsigned) usb.parent_port_number,
+-			     (unsigned) usb.interface);
+-	      }
+-	      break;
+-	    case GRUB_EFI_USB_CLASS_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_usb_class_device_path_t usb_class;
+-		grub_memcpy (&usb_class, dp, len);
+-		grub_printf ("/USBClass(%x,%x,%x,%x,%x)",
+-			     (unsigned) usb_class.vendor_id,
+-			     (unsigned) usb_class.product_id,
+-			     (unsigned) usb_class.device_class,
+-			     (unsigned) usb_class.device_subclass,
+-			     (unsigned) usb_class.device_protocol);
+-	      }
+-	      break;
+-	    case GRUB_EFI_I2O_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_i2o_device_path_t i2o;
+-		grub_memcpy (&i2o, dp, len);
+-		grub_printf ("/I2O(%x)", (unsigned) i2o.tid);
+-	      }
+-	      break;
+-	    case GRUB_EFI_MAC_ADDRESS_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_mac_address_device_path_t mac;
+-		grub_memcpy (&mac, dp, len);
+-		grub_printf ("/MacAddr(%x:%x:%x:%x:%x:%x,%x)",
+-			     (unsigned) mac.mac_address[0],
+-			     (unsigned) mac.mac_address[1],
+-			     (unsigned) mac.mac_address[2],
+-			     (unsigned) mac.mac_address[3],
+-			     (unsigned) mac.mac_address[4],
+-			     (unsigned) mac.mac_address[5],
+-			     (unsigned) mac.if_type);
+-	      }
+-	      break;
+-	    case GRUB_EFI_IPV4_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_ipv4_device_path_t ipv4;
+-		grub_memcpy (&ipv4, dp, len);
+-		grub_printf ("/IPv4(%u.%u.%u.%u,%u.%u.%u.%u,%u,%u,%x,%x)",
+-			     (unsigned) ipv4.local_ip_address[0],
+-			     (unsigned) ipv4.local_ip_address[1],
+-			     (unsigned) ipv4.local_ip_address[2],
+-			     (unsigned) ipv4.local_ip_address[3],
+-			     (unsigned) ipv4.remote_ip_address[0],
+-			     (unsigned) ipv4.remote_ip_address[1],
+-			     (unsigned) ipv4.remote_ip_address[2],
+-			     (unsigned) ipv4.remote_ip_address[3],
+-			     (unsigned) ipv4.local_port,
+-			     (unsigned) ipv4.remote_port,
+-			     (unsigned) ipv4.protocol,
+-			     (unsigned) ipv4.static_ip_address);
+-	      }
+-	      break;
+-	    case GRUB_EFI_IPV6_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_ipv6_device_path_t ipv6;
+-		grub_memcpy (&ipv6, dp, len);
+-		grub_printf ("/IPv6(%x:%x:%x:%x:%x:%x:%x:%x,%x:%x:%x:%x:%x:%x:%x:%x,%u,%u,%x,%x)",
+-			     (unsigned) ipv6.local_ip_address[0],
+-			     (unsigned) ipv6.local_ip_address[1],
+-			     (unsigned) ipv6.local_ip_address[2],
+-			     (unsigned) ipv6.local_ip_address[3],
+-			     (unsigned) ipv6.local_ip_address[4],
+-			     (unsigned) ipv6.local_ip_address[5],
+-			     (unsigned) ipv6.local_ip_address[6],
+-			     (unsigned) ipv6.local_ip_address[7],
+-			     (unsigned) ipv6.remote_ip_address[0],
+-			     (unsigned) ipv6.remote_ip_address[1],
+-			     (unsigned) ipv6.remote_ip_address[2],
+-			     (unsigned) ipv6.remote_ip_address[3],
+-			     (unsigned) ipv6.remote_ip_address[4],
+-			     (unsigned) ipv6.remote_ip_address[5],
+-			     (unsigned) ipv6.remote_ip_address[6],
+-			     (unsigned) ipv6.remote_ip_address[7],
+-			     (unsigned) ipv6.local_port,
+-			     (unsigned) ipv6.remote_port,
+-			     (unsigned) ipv6.protocol,
+-			     (unsigned) ipv6.static_ip_address);
+-	      }
+-	      break;
+-	    case GRUB_EFI_INFINIBAND_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_infiniband_device_path_t ib;
+-		grub_memcpy (&ib, dp, len);
+-		grub_printf ("/InfiniBand(%x,%llx,%llx,%llx)",
+-			     (unsigned) ib.port_gid[0], /* XXX */
+-			     ib.remote_id,
+-			     ib.target_port_id,
+-			     ib.device_id);
+-	      }
+-	      break;
+-	    case GRUB_EFI_UART_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_uart_device_path_t uart;
+-		grub_memcpy (&uart, dp, len);
+-		grub_printf ("/UART(%llu,%u,%x,%x)",
+-			     uart.baud_rate,
+-			     uart.data_bits,
+-			     uart.parity,
+-			     uart.stop_bits);
+-	      }
+-	      break;
+-	    case GRUB_EFI_VENDOR_MESSAGING_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_vendor_messaging_device_path_t vendor;
+-		grub_memcpy (&vendor, dp, sizeof (vendor));
+-		grub_printf ("/Vendor(%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x)",
+-			     (unsigned) vendor.vendor_guid.data1,
+-			     (unsigned) vendor.vendor_guid.data2,
+-			     (unsigned) vendor.vendor_guid.data3,
+-			     (unsigned) vendor.vendor_guid.data4[0],
+-			     (unsigned) vendor.vendor_guid.data4[1],
+-			     (unsigned) vendor.vendor_guid.data4[2],
+-			     (unsigned) vendor.vendor_guid.data4[3],
+-			     (unsigned) vendor.vendor_guid.data4[4],
+-			     (unsigned) vendor.vendor_guid.data4[5],
+-			     (unsigned) vendor.vendor_guid.data4[6],
+-			     (unsigned) vendor.vendor_guid.data4[7]);
+-	      }
+-	      break;
+-	    default:
+-	      grub_printf ("/UnknownMessaging(%x)", (unsigned) subtype);
+-	      break;
+-	    }
+-	  break;
+-
+-	case GRUB_EFI_MEDIA_DEVICE_PATH_TYPE:
+-	  switch (subtype)
+-	    {
+-	    case GRUB_EFI_HARD_DRIVE_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_hard_drive_device_path_t hd;
+-		grub_memcpy (&hd, dp, len);
+-		grub_printf ("/HD(%u,%llx,%llx,%02x%02x%02x%02x%02x%02x%02x%02x,%x,%x)",
+-			     hd.partition_number,
+-			     hd.partition_start,
+-			     hd.partition_size,
+-			     (unsigned) hd.partition_signature[0],
+-			     (unsigned) hd.partition_signature[1],
+-			     (unsigned) hd.partition_signature[2],
+-			     (unsigned) hd.partition_signature[3],
+-			     (unsigned) hd.partition_signature[4],
+-			     (unsigned) hd.partition_signature[5],
+-			     (unsigned) hd.partition_signature[6],
+-			     (unsigned) hd.partition_signature[7],
+-			     (unsigned) hd.mbr_type,
+-			     (unsigned) hd.signature_type);
+-	      }
+-	      break;
+-	    case GRUB_EFI_CDROM_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_cdrom_device_path_t cd;
+-		grub_memcpy (&cd, dp, len);
+-		grub_printf ("/CD(%u,%llx,%llx)",
+-			     cd.boot_entry,
+-			     cd.partition_start,
+-			     cd.partition_size);
+-	      }
+-	      break;
+-	    case GRUB_EFI_VENDOR_MEDIA_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_vendor_media_device_path_t vendor;
+-		grub_memcpy (&vendor, dp, sizeof (vendor));
+-		grub_printf ("/Vendor(%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x)",
+-			     (unsigned) vendor.vendor_guid.data1,
+-			     (unsigned) vendor.vendor_guid.data2,
+-			     (unsigned) vendor.vendor_guid.data3,
+-			     (unsigned) vendor.vendor_guid.data4[0],
+-			     (unsigned) vendor.vendor_guid.data4[1],
+-			     (unsigned) vendor.vendor_guid.data4[2],
+-			     (unsigned) vendor.vendor_guid.data4[3],
+-			     (unsigned) vendor.vendor_guid.data4[4],
+-			     (unsigned) vendor.vendor_guid.data4[5],
+-			     (unsigned) vendor.vendor_guid.data4[6],
+-			     (unsigned) vendor.vendor_guid.data4[7]);
+-	      }
+-	      break;
+-	    case GRUB_EFI_FILE_PATH_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_file_path_device_path_t *fp;
+-		grub_uint8_t buf[(len - 4) * 2 + 1];
+-		fp = (grub_efi_file_path_device_path_t *) dp;
+-		*grub_utf16_to_utf8 (buf, fp->path_name,
+-				     (len - 4) / sizeof (grub_efi_char16_t))
+-		  = '\0';
+-		grub_printf ("/File(%s)", buf);
+-	      }
+-	      break;
+-	    case GRUB_EFI_PROTOCOL_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_protocol_device_path_t proto;
+-		grub_memcpy (&proto, dp, sizeof (proto));
+-		grub_printf ("/Protocol(%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x)",
+-			     (unsigned) proto.guid.data1,
+-			     (unsigned) proto.guid.data2,
+-			     (unsigned) proto.guid.data3,
+-			     (unsigned) proto.guid.data4[0],
+-			     (unsigned) proto.guid.data4[1],
+-			     (unsigned) proto.guid.data4[2],
+-			     (unsigned) proto.guid.data4[3],
+-			     (unsigned) proto.guid.data4[4],
+-			     (unsigned) proto.guid.data4[5],
+-			     (unsigned) proto.guid.data4[6],
+-			     (unsigned) proto.guid.data4[7]);
+-	      }
+-	      break;
+-	    default:
+-	      grub_printf ("/UnknownMedia(%x)", (unsigned) subtype);
+-	      break;
+-	    }
+-	  break;
+-
+-	case GRUB_EFI_BIOS_DEVICE_PATH_TYPE:
+-	  switch (subtype)
+-	    {
+-	    case GRUB_EFI_BIOS_DEVICE_PATH_SUBTYPE:
+-	      {
+-		grub_efi_bios_device_path_t bios;
+-		grub_memcpy (&bios, dp, sizeof (bios));
+-		grub_printf ("/BIOS(%x,%x,%s)",
+-			     (unsigned) bios.device_type,
+-			     (unsigned) bios.status_flags,
+-			     (char *) (dp + 1));
+-	      }
+-	      break;
+-	    default:
+-	      grub_printf ("/UnknownBIOS(%x)", (unsigned) subtype);
+-	      break;
+-	    }
+-	  break;
+-
+-	default:
+-	  grub_printf ("/UnknownType(%x,%x)\n",
+-		       (unsigned) type,
+-		       (unsigned) subtype);
+-	  return;
+-	  break;
+-	}
+-
+-      if (GRUB_EFI_END_ENTIRE_DEVICE_PATH (dp))
+-	break;
+-
+-      dp = (grub_efi_device_path_t *) ((char *) dp + len);
+-    }
+-}
+diff --git a/efi/efidisk.c b/efi/efidisk.c
+index 885ae1b..145ed16 100644
+--- a/efi/efidisk.c
++++ b/efi/efidisk.c
+@@ -38,100 +38,12 @@ struct grub_efidisk_data
+ /* GUIDs.  */
+ static grub_efi_guid_t disk_io_guid = GRUB_EFI_DISK_IO_GUID;
+ static grub_efi_guid_t block_io_guid = GRUB_EFI_BLOCK_IO_GUID;
++static grub_efi_guid_t device_path_from_text_guid = GRUB_EFI_DEVICE_PATH_FROM_TEXT_GUID;
+ 
+ static struct grub_efidisk_data *fd_devices;
+ static struct grub_efidisk_data *hd_devices;
+ static struct grub_efidisk_data *cd_devices;
+ 
+-/* Duplicate a device path.  */
+-static grub_efi_device_path_t *
+-duplicate_device_path (const grub_efi_device_path_t *dp)
+-{
+-  grub_efi_device_path_t *p;
+-  grub_size_t total_size = 0;
+-
+-  for (p = (grub_efi_device_path_t *) dp;
+-       ;
+-       p = GRUB_EFI_NEXT_DEVICE_PATH (p))
+-    {
+-      total_size += GRUB_EFI_DEVICE_PATH_LENGTH (p);
+-      if (GRUB_EFI_END_ENTIRE_DEVICE_PATH (p))
+-	break;
+-    }
+-
+-  p = grub_malloc (total_size);
+-  if (! p)
+-    return 0;
+-
+-  grub_memcpy (p, dp, total_size);
+-  return p;
+-}
+-
+-/* Return the device path node right before the end node.  */
+-static grub_efi_device_path_t *
+-find_last_device_path (const grub_efi_device_path_t *dp)
+-{
+-  grub_efi_device_path_t *next, *p;
+-
+-  if (GRUB_EFI_END_ENTIRE_DEVICE_PATH (dp))
+-    return 0;
+-
+-  for (p = (grub_efi_device_path_t *) dp, next = GRUB_EFI_NEXT_DEVICE_PATH (p);
+-       ! GRUB_EFI_END_ENTIRE_DEVICE_PATH (next);
+-       p = next, next = GRUB_EFI_NEXT_DEVICE_PATH (next))
+-    ;
+-
+-  return p;
+-}
+-
+-/* Compare device paths.  */
+-static int
+-compare_device_paths (const grub_efi_device_path_t *dp1,
+-		      const grub_efi_device_path_t *dp2)
+-{
+-  if (! dp1 || ! dp2)
+-    /* Return non-zero.  */
+-    return 1;
+-
+-  while (1)
+-    {
+-      grub_efi_uint8_t type1, type2;
+-      grub_efi_uint8_t subtype1, subtype2;
+-      grub_efi_uint16_t len1, len2;
+-      int ret;
+-
+-      type1 = GRUB_EFI_DEVICE_PATH_TYPE (dp1);
+-      type2 = GRUB_EFI_DEVICE_PATH_TYPE (dp2);
+-
+-      if (type1 != type2)
+-	return (int) type2 - (int) type1;
+-
+-      subtype1 = GRUB_EFI_DEVICE_PATH_SUBTYPE (dp1);
+-      subtype2 = GRUB_EFI_DEVICE_PATH_SUBTYPE (dp2);
+-
+-      if (subtype1 != subtype2)
+-	return (int) subtype1 - (int) subtype2;
+-
+-      len1 = GRUB_EFI_DEVICE_PATH_LENGTH (dp1);
+-      len2 = GRUB_EFI_DEVICE_PATH_LENGTH (dp2);
+-
+-      if (len1 != len2)
+-	return (int) len1 - (int) len2;
+-
+-      ret = grub_memcmp ((char *)dp1, (char *)dp2, len1);
+-      if (ret != 0)
+-	return ret;
+-
+-      if (GRUB_EFI_END_ENTIRE_DEVICE_PATH (dp1))
+-	break;
+-
+-      dp1 = (grub_efi_device_path_t *) ((char *) dp1 + len1);
+-      dp2 = (grub_efi_device_path_t *) ((char *) dp2 + len2);
+-    }
+-
+-  return 0;
+-}
+-
+ static struct grub_efidisk_data *
+ make_devices (void)
+ {
+@@ -648,3 +560,181 @@ grub_get_drive_partition_from_bdev_handle (grub_efi_handle_t handle,
+ 
+   return 0;
+ }
++
++int
++check_device (const char *device)
++{
++  grub_efi_device_path_t *dp;
++
++  dp = device_path_from_utf8(device);
++  if (dp == NULL)
++    return 0;
++
++  grub_free(dp);
++  return 1;
++}
++
++static void
++swap_devices (struct grub_efidisk_data *d0,
++	      struct grub_efidisk_data *d1)
++{
++  struct grub_efidisk_data tmp;
++
++  if (!d0 || !d1)
++    return;
++
++  memcpy(&tmp, d1, sizeof(*d1));
++
++  memcpy(&d0->handle, &d1->handle, sizeof(d1->handle));
++  d0->device_path = d1->device_path;
++  d0->last_device_path = d1->last_device_path;
++  d0->block_io = d1->block_io;
++  d0->disk_io = d1->disk_io;
++
++  memcpy(d1->handle, tmp.handle, sizeof(tmp.handle));
++  d1->device_path = tmp.device_path;
++  d1->last_device_path = tmp.last_device_path;
++  d1->block_io = tmp.block_io;
++  d1->disk_io = tmp.disk_io;
++}
++
++static int
++compare_hd_device_paths(grub_efi_hard_drive_device_path_t *hd0,
++			grub_efi_hard_drive_device_path_t *hd1)
++{
++  grub_efi_uint64_t x;
++  int sigsize;
++
++  if ((x = hd1->partition_number - hd0->partition_number))
++    return x;
++
++  if ((x = hd1->partition_start - hd0->partition_start))
++    return x;
++
++
++  if ((x = hd1->partition_size - hd0->partition_size))
++    return x;
++
++  if ((x = hd1->signature_type - hd0->signature_type))
++    return x;
++
++  switch (hd0->signature_type)
++    {
++    case 1:
++      sigsize = 4;
++      break;
++    case 2:
++      sigsize = 16;
++      break;
++    default:
++      sigsize = 0;
++      break;
++    }
++  x = grub_memcmp((char *)hd0->partition_signature,
++                  (char *)hd1->partition_signature, sigsize);
++  return x;
++}
++
++static grub_efi_device_path_t *
++get_parent_of_disk(grub_efi_device_path_t *hd)
++{
++  grub_efi_uintn_t num_handles;
++  grub_efi_handle_t *handles;
++  grub_efi_handle_t *handle;
++  grub_efi_device_path_t *ret;
++
++  handles = grub_efi_locate_handle (GRUB_EFI_BY_PROTOCOL,
++				     &simple_file_system_guid,
++                                    0, &num_handles);
++  for (handle = handles; num_handles--; handle++)
++    {
++      grub_efi_device_path_t *fsdp, *hddp;
++
++      fsdp = grub_efi_get_device_path (*handle);
++      if (!fsdp)
++	continue;
++      hddp = find_last_device_path(fsdp);
++
++      if (compare_hd_device_paths((grub_efi_hard_drive_device_path_t *)hddp,
++				   (grub_efi_hard_drive_device_path_t *)hd) == 0)
++        {
++	  grub_efi_device_path_t *p;
++	  ret = duplicate_device_path((grub_efi_device_path_t *)fsdp);
++	  if (!ret)
++	    return NULL;
++	  for (p = ret; ; p = GRUB_EFI_NEXT_DEVICE_PATH(p))
++	    {
++	      if (GRUB_EFI_END_ENTIRE_DEVICE_PATH(p))
++		break;
++	      if ((GRUB_EFI_DEVICE_PATH_TYPE(p) ==
++			GRUB_EFI_MEDIA_DEVICE_PATH_TYPE)
++		      && (GRUB_EFI_DEVICE_PATH_SUBTYPE(p) ==
++				GRUB_EFI_HARD_DRIVE_DEVICE_PATH_SUBTYPE))
++	        {
++		  p->type = GRUB_EFI_END_DEVICE_PATH_TYPE;
++		  p->subtype = GRUB_EFI_END_ENTIRE_DEVICE_PATH_SUBTYPE;
++		  p->length[0] = 4;
++		  p->length[1] = 0;
++		  break;
++		}
++	    }
++	  return ret;
++	}
++    }
++  return NULL;
++}
++
++void
++assign_device_name (int drive, const char *device)
++{
++  grub_efi_device_path_t *dp0, *dp1;
++  struct grub_efidisk_data *devices;
++  struct grub_efidisk_data *d, *d0 = NULL, *d1 = NULL;
++  int n = -1;
++
++  dp0 = device_path_from_utf8(device);
++  if (!dp0)
++    return;
++
++  dp1 = get_parent_of_disk(dp0);
++  grub_free(dp0);
++  if (!dp1)
++    return;
++
++  if (drive & 0x80)
++    {
++      drive -= 0x80;
++      devices = hd_devices;
++    }
++  else
++    {
++      devices = cd_devices;
++      drive -= 0x100;
++    }
++
++  for (d = devices; d; d = d->next)
++    {
++      if (!d->device_path)
++	continue;
++
++      if (++n == drive)
++	d0 = d;
++
++      int x;
++      if (!(x = compare_device_paths(dp1, d->device_path)))
++	d1 = d;
++
++      if (d0 && d1)
++        {
++	  /* if they're the same node, that just means it's already at
++	   * the right position. */
++	  if (d0 != d1)
++	    {
++	      swap_devices(d0, d1);
++	      grub_free(dp1);
++	      return;
++	    }
++	}
++    }
++  grub_free(dp1);
++}
+diff --git a/efi/efidp.c b/efi/efidp.c
+new file mode 100644
+index 0000000..af6cdd5
+--- /dev/null
++++ b/efi/efidp.c
+@@ -0,0 +1,984 @@
++/*
++ * GRUB  --  GRand Unified Bootloader
++ * Copyright (C) 2010 Free Software Foundation, Inc.
++ *
++ *  GRUB is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation; either version 2 of the License, or
++ *  (at your option) any later version.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with GRUB; if not, write to the Free Software
++ *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
++ */
++
++#include <grub/types.h>
++#include <grub/misc.h>
++#include <grub/efi/api.h>
++#include <grub/efi/efi.h>
++#include <grub/efi/misc.h>
++
++#include <shared.h>
++
++/* Duplicate a device path.  */
++grub_efi_device_path_t *
++duplicate_device_path (const grub_efi_device_path_t *dp)
++{
++  grub_efi_device_path_t *p;
++  grub_size_t total_size = 0;
++
++  for (p = (grub_efi_device_path_t *) dp;
++       ;
++       p = GRUB_EFI_NEXT_DEVICE_PATH (p))
++    {
++      total_size += GRUB_EFI_DEVICE_PATH_LENGTH (p);
++      if (GRUB_EFI_END_ENTIRE_DEVICE_PATH (p))
++	break;
++    }
++
++  p = grub_malloc (total_size);
++  if (! p)
++    return 0;
++
++  grub_memcpy (p, dp, total_size);
++  return p;
++}
++
++/* Return the device path node right before the end node.  */
++grub_efi_device_path_t *
++find_last_device_path (const grub_efi_device_path_t *dp)
++{
++  grub_efi_device_path_t *next, *p;
++
++  if (GRUB_EFI_END_ENTIRE_DEVICE_PATH (dp))
++    return 0;
++
++  for (p = (grub_efi_device_path_t *) dp, next = GRUB_EFI_NEXT_DEVICE_PATH (p);
++       ! GRUB_EFI_END_ENTIRE_DEVICE_PATH (next);
++       p = next, next = GRUB_EFI_NEXT_DEVICE_PATH (next))
++    ;
++
++  return p;
++}
++
++/* Compare device paths.  */
++int
++compare_device_paths (const grub_efi_device_path_t *dp1,
++		      const grub_efi_device_path_t *dp2)
++{
++  if (! dp1 || ! dp2)
++    /* Return non-zero.  */
++    return 1;
++
++  while (1)
++    {
++      grub_efi_uint8_t type1, type2;
++      grub_efi_uint8_t subtype1, subtype2;
++      grub_efi_uint16_t len1, len2;
++      int ret;
++
++      type1 = GRUB_EFI_DEVICE_PATH_TYPE (dp1);
++      type2 = GRUB_EFI_DEVICE_PATH_TYPE (dp2);
++
++      if (type1 != type2)
++	return (int) type2 - (int) type1;
++
++      subtype1 = GRUB_EFI_DEVICE_PATH_SUBTYPE (dp1);
++      subtype2 = GRUB_EFI_DEVICE_PATH_SUBTYPE (dp2);
++
++      if (subtype1 != subtype2)
++	return (int) subtype1 - (int) subtype2;
++
++      len1 = GRUB_EFI_DEVICE_PATH_LENGTH (dp1);
++      len2 = GRUB_EFI_DEVICE_PATH_LENGTH (dp2);
++
++      if (len1 != len2)
++	return (int) len1 - (int) len2;
++
++      ret = grub_memcmp ((char *)dp1, (char *)dp2, len1);
++      if (ret != 0)
++	return ret;
++
++      if (GRUB_EFI_END_ENTIRE_DEVICE_PATH (dp1))
++	break;
++
++      dp1 = (grub_efi_device_path_t *) ((char *) dp1 + len1);
++      dp2 = (grub_efi_device_path_t *) ((char *) dp2 + len2);
++    }
++
++  return 0;
++}
++
++/* Print the chain of Device Path nodes. This is mainly for debugging. */
++void
++grub_efi_print_device_path (grub_efi_device_path_t *dp)
++{
++  while (1)
++    {
++      grub_efi_uint8_t type = GRUB_EFI_DEVICE_PATH_TYPE (dp);
++      grub_efi_uint8_t subtype = GRUB_EFI_DEVICE_PATH_SUBTYPE (dp);
++      grub_efi_uint16_t len = GRUB_EFI_DEVICE_PATH_LENGTH (dp);
++
++      switch (type)
++	{
++	case GRUB_EFI_END_DEVICE_PATH_TYPE:
++	  switch (subtype)
++	    {
++	    case GRUB_EFI_END_ENTIRE_DEVICE_PATH_SUBTYPE:
++	      grub_printf ("/EndEntire\n");
++	      //grub_putchar ('\n');
++	      break;
++	    case GRUB_EFI_END_THIS_DEVICE_PATH_SUBTYPE:
++	      grub_printf ("/EndThis\n");
++	      //grub_putchar ('\n');
++	      break;
++	    default:
++	      grub_printf ("/EndUnknown(%x)\n", (unsigned) subtype);
++	      break;
++	    }
++	  break;
++
++	case GRUB_EFI_HARDWARE_DEVICE_PATH_TYPE:
++	  switch (subtype)
++	    {
++	    case GRUB_EFI_PCI_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_pci_device_path_t pci;
++		grub_memcpy (&pci, dp, len);
++		grub_printf ("/PCI(%x,%x)",
++			     (unsigned) pci.function, (unsigned) pci.device);
++	      }
++	      break;
++	    case GRUB_EFI_PCCARD_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_pccard_device_path_t pccard;
++		grub_memcpy (&pccard, dp, len);
++		grub_printf ("/PCCARD(%x)",
++			     (unsigned) pccard.function);
++	      }
++	      break;
++	    case GRUB_EFI_MEMORY_MAPPED_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_memory_mapped_device_path_t mmapped;
++		grub_memcpy (&mmapped, dp, len);
++		grub_printf ("/MMap(%x,%llx,%llx)",
++			     (unsigned) mmapped.memory_type,
++			     mmapped.start_address,
++			     mmapped.end_address);
++	      }
++	      break;
++	    case GRUB_EFI_VENDOR_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_vendor_device_path_t vendor;
++		grub_memcpy (&vendor, dp, sizeof (vendor));
++		grub_printf ("/Vendor(%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x)",
++			     (unsigned) vendor.vendor_guid.data1,
++			     (unsigned) vendor.vendor_guid.data2,
++			     (unsigned) vendor.vendor_guid.data3,
++			     (unsigned) vendor.vendor_guid.data4[0],
++			     (unsigned) vendor.vendor_guid.data4[1],
++			     (unsigned) vendor.vendor_guid.data4[2],
++			     (unsigned) vendor.vendor_guid.data4[3],
++			     (unsigned) vendor.vendor_guid.data4[4],
++			     (unsigned) vendor.vendor_guid.data4[5],
++			     (unsigned) vendor.vendor_guid.data4[6],
++			     (unsigned) vendor.vendor_guid.data4[7]);
++	      }
++	      break;
++	    case GRUB_EFI_CONTROLLER_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_controller_device_path_t controller;
++		grub_memcpy (&controller, dp, len);
++		grub_printf ("/Ctrl(%x)",
++			     (unsigned) controller.controller_number);
++	      }
++	      break;
++	    default:
++	      grub_printf ("/UnknownHW(%x)", (unsigned) subtype);
++	      break;
++	    }
++	  break;
++
++	case GRUB_EFI_ACPI_DEVICE_PATH_TYPE:
++	  switch (subtype)
++	    {
++	    case GRUB_EFI_ACPI_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_acpi_device_path_t acpi;
++		grub_memcpy (&acpi, dp, len);
++		grub_printf ("/ACPI(%x,%x)",
++			     (unsigned) acpi.hid,
++			     (unsigned) acpi.uid);
++	      }
++	      break;
++	    case GRUB_EFI_EXPANDED_ACPI_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_expanded_acpi_device_path_t eacpi;
++		grub_memcpy (&eacpi, dp, sizeof (eacpi));
++		grub_printf ("/ACPI(");
++
++		if (GRUB_EFI_EXPANDED_ACPI_HIDSTR (dp)[0] == '\0')
++		  grub_printf ("%x,", (unsigned) eacpi.hid);
++		else
++		  grub_printf ("%s,", GRUB_EFI_EXPANDED_ACPI_HIDSTR (dp));
++
++		if (GRUB_EFI_EXPANDED_ACPI_UIDSTR (dp)[0] == '\0')
++		  grub_printf ("%x,", (unsigned) eacpi.uid);
++		else
++		  grub_printf ("%s,", GRUB_EFI_EXPANDED_ACPI_UIDSTR (dp));
++
++		if (GRUB_EFI_EXPANDED_ACPI_CIDSTR (dp)[0] == '\0')
++		  grub_printf ("%x)", (unsigned) eacpi.cid);
++		else
++		  grub_printf ("%s)", GRUB_EFI_EXPANDED_ACPI_CIDSTR (dp));
++	      }
++	      break;
++	    default:
++	      grub_printf ("/UnknownACPI(%x)", (unsigned) subtype);
++	      break;
++	    }
++	  break;
++
++	case GRUB_EFI_MESSAGING_DEVICE_PATH_TYPE:
++	  switch (subtype)
++	    {
++	    case GRUB_EFI_ATAPI_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_atapi_device_path_t atapi;
++		grub_memcpy (&atapi, dp, len);
++		grub_printf ("/ATAPI(%x,%x,%x)",
++			     (unsigned) atapi.primary_secondary,
++			     (unsigned) atapi.slave_master,
++			     (unsigned) atapi.lun);
++	      }
++	      break;
++	    case GRUB_EFI_SCSI_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_scsi_device_path_t scsi;
++		grub_memcpy (&scsi, dp, len);
++		grub_printf ("/SCSI(%x,%x)",
++			     (unsigned) scsi.pun,
++			     (unsigned) scsi.lun);
++	      }
++	      break;
++	    case GRUB_EFI_FIBRE_CHANNEL_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_fibre_channel_device_path_t fc;
++		grub_memcpy (&fc, dp, len);
++		grub_printf ("/FibreChannel(%llx,%llx)",
++			     fc.wwn, fc.lun);
++	      }
++	      break;
++	    case GRUB_EFI_1394_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_1394_device_path_t firewire;
++		grub_memcpy (&firewire, dp, len);
++		grub_printf ("/1394(%llx)", firewire.guid);
++	      }
++	      break;
++	    case GRUB_EFI_USB_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_usb_device_path_t usb;
++		grub_memcpy (&usb, dp, len);
++		grub_printf ("/USB(%x,%x)",
++			     (unsigned) usb.parent_port_number,
++			     (unsigned) usb.interface);
++	      }
++	      break;
++	    case GRUB_EFI_USB_CLASS_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_usb_class_device_path_t usb_class;
++		grub_memcpy (&usb_class, dp, len);
++		grub_printf ("/USBClass(%x,%x,%x,%x,%x)",
++			     (unsigned) usb_class.vendor_id,
++			     (unsigned) usb_class.product_id,
++			     (unsigned) usb_class.device_class,
++			     (unsigned) usb_class.device_subclass,
++			     (unsigned) usb_class.device_protocol);
++	      }
++	      break;
++	    case GRUB_EFI_I2O_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_i2o_device_path_t i2o;
++		grub_memcpy (&i2o, dp, len);
++		grub_printf ("/I2O(%x)", (unsigned) i2o.tid);
++	      }
++	      break;
++	    case GRUB_EFI_MAC_ADDRESS_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_mac_address_device_path_t mac;
++		grub_memcpy (&mac, dp, len);
++		grub_printf ("/MacAddr(%x:%x:%x:%x:%x:%x,%x)",
++			     (unsigned) mac.mac_address[0],
++			     (unsigned) mac.mac_address[1],
++			     (unsigned) mac.mac_address[2],
++			     (unsigned) mac.mac_address[3],
++			     (unsigned) mac.mac_address[4],
++			     (unsigned) mac.mac_address[5],
++			     (unsigned) mac.if_type);
++	      }
++	      break;
++	    case GRUB_EFI_IPV4_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_ipv4_device_path_t ipv4;
++		grub_memcpy (&ipv4, dp, len);
++		grub_printf ("/IPv4(%u.%u.%u.%u,%u.%u.%u.%u,%u,%u,%x,%x)",
++			     (unsigned) ipv4.local_ip_address[0],
++			     (unsigned) ipv4.local_ip_address[1],
++			     (unsigned) ipv4.local_ip_address[2],
++			     (unsigned) ipv4.local_ip_address[3],
++			     (unsigned) ipv4.remote_ip_address[0],
++			     (unsigned) ipv4.remote_ip_address[1],
++			     (unsigned) ipv4.remote_ip_address[2],
++			     (unsigned) ipv4.remote_ip_address[3],
++			     (unsigned) ipv4.local_port,
++			     (unsigned) ipv4.remote_port,
++			     (unsigned) ipv4.protocol,
++			     (unsigned) ipv4.static_ip_address);
++	      }
++	      break;
++	    case GRUB_EFI_IPV6_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_ipv6_device_path_t ipv6;
++		grub_memcpy (&ipv6, dp, len);
++		grub_printf ("/IPv6(%x:%x:%x:%x:%x:%x:%x:%x,%x:%x:%x:%x:%x:%x:%x:%x,%u,%u,%x,%x)",
++			     (unsigned) ipv6.local_ip_address[0],
++			     (unsigned) ipv6.local_ip_address[1],
++			     (unsigned) ipv6.local_ip_address[2],
++			     (unsigned) ipv6.local_ip_address[3],
++			     (unsigned) ipv6.local_ip_address[4],
++			     (unsigned) ipv6.local_ip_address[5],
++			     (unsigned) ipv6.local_ip_address[6],
++			     (unsigned) ipv6.local_ip_address[7],
++			     (unsigned) ipv6.remote_ip_address[0],
++			     (unsigned) ipv6.remote_ip_address[1],
++			     (unsigned) ipv6.remote_ip_address[2],
++			     (unsigned) ipv6.remote_ip_address[3],
++			     (unsigned) ipv6.remote_ip_address[4],
++			     (unsigned) ipv6.remote_ip_address[5],
++			     (unsigned) ipv6.remote_ip_address[6],
++			     (unsigned) ipv6.remote_ip_address[7],
++			     (unsigned) ipv6.local_port,
++			     (unsigned) ipv6.remote_port,
++			     (unsigned) ipv6.protocol,
++			     (unsigned) ipv6.static_ip_address);
++	      }
++	      break;
++	    case GRUB_EFI_INFINIBAND_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_infiniband_device_path_t ib;
++		grub_memcpy (&ib, dp, len);
++		grub_printf ("/InfiniBand(%x,%llx,%llx,%llx)",
++			     (unsigned) ib.port_gid[0], /* XXX */
++			     ib.remote_id,
++			     ib.target_port_id,
++			     ib.device_id);
++	      }
++	      break;
++	    case GRUB_EFI_UART_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_uart_device_path_t uart;
++		grub_memcpy (&uart, dp, len);
++		grub_printf ("/UART(%llu,%u,%x,%x)",
++			     uart.baud_rate,
++			     uart.data_bits,
++			     uart.parity,
++			     uart.stop_bits);
++	      }
++	      break;
++	    case GRUB_EFI_VENDOR_MESSAGING_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_vendor_messaging_device_path_t vendor;
++		grub_memcpy (&vendor, dp, sizeof (vendor));
++		grub_printf ("/Vendor(%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x)",
++			     (unsigned) vendor.vendor_guid.data1,
++			     (unsigned) vendor.vendor_guid.data2,
++			     (unsigned) vendor.vendor_guid.data3,
++			     (unsigned) vendor.vendor_guid.data4[0],
++			     (unsigned) vendor.vendor_guid.data4[1],
++			     (unsigned) vendor.vendor_guid.data4[2],
++			     (unsigned) vendor.vendor_guid.data4[3],
++			     (unsigned) vendor.vendor_guid.data4[4],
++			     (unsigned) vendor.vendor_guid.data4[5],
++			     (unsigned) vendor.vendor_guid.data4[6],
++			     (unsigned) vendor.vendor_guid.data4[7]);
++	      }
++	      break;
++	    default:
++	      grub_printf ("/UnknownMessaging(%x)", (unsigned) subtype);
++	      break;
++	    }
++	  break;
++
++	case GRUB_EFI_MEDIA_DEVICE_PATH_TYPE:
++	  switch (subtype)
++	    {
++	    case GRUB_EFI_HARD_DRIVE_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_hard_drive_device_path_t hd;
++		grub_memcpy (&hd, dp, len);
++		grub_printf ("/HD(%u,%llx,%llx,%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x)",
++			     hd.partition_number,
++			     hd.partition_start,
++			     hd.partition_size,
++			     (unsigned) hd.partition_signature[3],
++			     (unsigned) hd.partition_signature[2],
++			     (unsigned) hd.partition_signature[1],
++			     (unsigned) hd.partition_signature[0],
++			     (unsigned) hd.partition_signature[5],
++			     (unsigned) hd.partition_signature[4],
++			     (unsigned) hd.partition_signature[7],
++			     (unsigned) hd.partition_signature[6],
++			     (unsigned) hd.partition_signature[9],
++			     (unsigned) hd.partition_signature[8],
++			     (unsigned) hd.partition_signature[10],
++			     (unsigned) hd.partition_signature[11],
++			     (unsigned) hd.partition_signature[12],
++			     (unsigned) hd.partition_signature[13],
++			     (unsigned) hd.partition_signature[14],
++			     (unsigned) hd.partition_signature[15]);
++	      }
++	      break;
++	    case GRUB_EFI_CDROM_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_cdrom_device_path_t cd;
++		grub_memcpy (&cd, dp, len);
++		grub_printf ("/CD(%u,%llx,%llx)",
++			     cd.boot_entry,
++			     cd.partition_start,
++			     cd.partition_size);
++	      }
++	      break;
++	    case GRUB_EFI_VENDOR_MEDIA_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_vendor_media_device_path_t vendor;
++		grub_memcpy (&vendor, dp, sizeof (vendor));
++		grub_printf ("/Vendor(%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x)",
++			     (unsigned) vendor.vendor_guid.data1,
++			     (unsigned) vendor.vendor_guid.data2,
++			     (unsigned) vendor.vendor_guid.data3,
++			     (unsigned) vendor.vendor_guid.data4[0],
++			     (unsigned) vendor.vendor_guid.data4[1],
++			     (unsigned) vendor.vendor_guid.data4[2],
++			     (unsigned) vendor.vendor_guid.data4[3],
++			     (unsigned) vendor.vendor_guid.data4[4],
++			     (unsigned) vendor.vendor_guid.data4[5],
++			     (unsigned) vendor.vendor_guid.data4[6],
++			     (unsigned) vendor.vendor_guid.data4[7]);
++	      }
++	      break;
++	    case GRUB_EFI_FILE_PATH_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_file_path_device_path_t *fp;
++		grub_uint8_t buf[(len - 4) * 2 + 1];
++		fp = (grub_efi_file_path_device_path_t *) dp;
++		*grub_utf16_to_utf8 (buf, fp->path_name,
++				     (len - 4) / sizeof (grub_efi_char16_t))
++		  = '\0';
++		grub_printf ("/File(%s)", buf);
++	      }
++	      break;
++	    case GRUB_EFI_PROTOCOL_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_protocol_device_path_t proto;
++		grub_memcpy (&proto, dp, sizeof (proto));
++		grub_printf ("/Protocol(%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x)",
++			     (unsigned) proto.guid.data1,
++			     (unsigned) proto.guid.data2,
++			     (unsigned) proto.guid.data3,
++			     (unsigned) proto.guid.data4[0],
++			     (unsigned) proto.guid.data4[1],
++			     (unsigned) proto.guid.data4[2],
++			     (unsigned) proto.guid.data4[3],
++			     (unsigned) proto.guid.data4[4],
++			     (unsigned) proto.guid.data4[5],
++			     (unsigned) proto.guid.data4[6],
++			     (unsigned) proto.guid.data4[7]);
++	      }
++	      break;
++	    default:
++	      grub_printf ("/UnknownMedia(%x)", (unsigned) subtype);
++	      break;
++	    }
++	  break;
++
++	case GRUB_EFI_BIOS_DEVICE_PATH_TYPE:
++	  switch (subtype)
++	    {
++	    case GRUB_EFI_BIOS_DEVICE_PATH_SUBTYPE:
++	      {
++		grub_efi_bios_device_path_t bios;
++		grub_memcpy (&bios, dp, sizeof (bios));
++		grub_printf ("/BIOS(%x,%x,%s)",
++			     (unsigned) bios.device_type,
++			     (unsigned) bios.status_flags,
++			     (char *) (dp + 1));
++	      }
++	      break;
++	    default:
++	      grub_printf ("/UnknownBIOS(%x)", (unsigned) subtype);
++	      break;
++	    }
++	  break;
++
++	default:
++	  grub_printf ("/UnknownType(%x,%x)\n",
++		       (unsigned) type,
++		       (unsigned) subtype);
++	  return;
++	  break;
++	}
++
++      if (GRUB_EFI_END_ENTIRE_DEVICE_PATH (dp))
++	break;
++
++      dp = (grub_efi_device_path_t *) ((char *) dp + len);
++    }
++}
++
++static inline int
++dpname_matches(char *str, char *candidate)
++{
++  grub_size_t clen = grub_strlen(candidate);
++  char scratch[clen + 2];
++  int rc;
++
++  grub_strncpy(scratch, candidate, clen);
++  scratch[clen+1] = '\0';
++  if (scratch[clen-1] == '$')
++    {
++      scratch[--clen] = '\0';
++      rc = !grub_strncasecmp(str, scratch, clen);
++      return rc;
++    }
++
++    grub_strncpy(scratch+clen, "(", 2);
++    clen = grub_strlen(scratch);
++    rc = !grub_strncasecmp(str, scratch, clen);
++    return rc;
++}
++
++static void
++finish_param_parse(char *pos, char **end, char *tmp)
++{
++  if (!pos || !end || !tmp)
++    return;
++
++  if (*end)
++    **end = *tmp;
++}
++
++static char *
++get_next_param(char *pos, char **end, char *tmp)
++{
++  char *comma = NULL;
++  char *openparen = NULL;
++  char *closeparen = NULL;
++
++  if (!pos || !end || !tmp)
++    return NULL;
++
++  if (*end)
++    **end = *tmp;
++
++  openparen = grub_strchr(pos, '(');
++  if (*openparen)
++    {
++      pos = grub_strnchr(openparen + 1, ' ');
++      comma = grub_strchr(pos, ',');
++      closeparen = grub_strchr(pos, ')');
++
++      if (*comma)
++	{
++	  *tmp = *comma;
++	  *comma = '\0';
++	  *end = comma;
++	}
++      else if (*closeparen)
++	{
++	  *tmp = *closeparen;
++	  *closeparen = '\0';
++	  *end = closeparen;
++	}
++      return pos;
++    }
++
++  comma = grub_strchr(pos, ',');
++  if (*comma)
++    {
++      pos = grub_strnchr(comma + 1, ' ');
++      comma = grub_strchr(pos, ',');
++      closeparen = grub_strchr(pos, ')');
++
++      if (*comma)
++	{
++	  *tmp = *comma;
++	  *comma = '\0';
++	  *end = comma;
++	}
++      else if (*closeparen)
++	{
++	  *tmp = *closeparen;
++	  *closeparen = '\0';
++	  *end = closeparen;
++	}
++      return pos;
++    }
++
++  closeparen = grub_strchr(pos, ')');
++  if (*closeparen)
++    pos = grub_strnchr(closeparen + 1, ' ');
++
++  return pos;
++}
++
++struct generic_device_path
++  {
++    grub_efi_uint8_t type;
++    grub_efi_uint8_t subtype;
++    grub_efi_uint16_t length;
++  } __attribute__((packed));
++
++struct hd_media_device_path
++  {
++    grub_efi_uint8_t type;
++    grub_efi_uint8_t subtype;
++    grub_efi_uint16_t length;
++    grub_efi_uint32_t partition;
++    grub_efi_uint64_t startlba;
++    grub_efi_uint64_t size;
++    grub_efi_uint8_t signature[16];
++    grub_efi_uint8_t mbr_type;
++    grub_efi_uint8_t signature_type;
++  } __attribute__((packed));
++
++static inline int
++parse_device_path_component(const char *orig_str, void *data)
++{
++  int orig_str_len = strlen(orig_str) + 1;
++  char str[orig_str_len];
++  char tmp;
++  char *pos = str;
++  int ret = 0;
++
++  grub_strcpy(str, orig_str);
++  if (dpname_matches(str, "pci"))
++    {
++    }
++  else if (dpname_matches(str, "pccard"))
++    {
++    }
++  else if (dpname_matches(str, "mmap"))
++    {
++    }
++  else if (dpname_matches(str, "ctrl"))
++    {
++    }
++  else if (dpname_matches(str, "acpi"))
++    {
++    }
++    /* XXX what about _ADR? */
++  /* messaging device paths */
++  else if (dpname_matches(str, "atapi"))
++    {
++    }
++  else if (dpname_matches(str, "scsi"))
++    {
++    }
++  else if (dpname_matches(str, "fibrechannel"))
++    {
++    }
++  else if (dpname_matches(str, "1394"))
++    {
++    }
++  else if (dpname_matches(str, "usb"))
++    {
++    }
++  else if (dpname_matches(str, "sata"))
++    {
++    }
++    /* XXX what about usb-wwid */
++    /* XXX what about lun */
++  else if (dpname_matches(str, "usbclass"))
++    {
++    }
++  else if (dpname_matches(str, "i2o"))
++    {
++    }
++  else if (dpname_matches(str, "macaddr"))
++    {
++    }
++  else if (dpname_matches(str, "ipv4"))
++    {
++    }
++  else if (dpname_matches(str, "ipv6"))
++    {
++    }
++    /* XXX what about vlan */
++  else if (dpname_matches(str, "infiniband"))
++    {
++    }
++  else if (dpname_matches(str, "uart"))
++    {
++    }
++  else if (dpname_matches(str, "uartflowctrl"))
++    {
++    }
++  else if (dpname_matches(str, "sas"))
++    {
++    }
++  else if (dpname_matches(str, "iscsi"))
++    {
++    }
++  /* media device paths */
++  else if (dpname_matches(str, "hd"))
++    {
++      /* these look roughly like:
++       *  HD(Partition,Type,Signature,Start, Size)
++       * but:
++       * - type may be optional.  1 or "MBR" means MBR. 2 or "GPT" means GPT.
++       * - start and size are optional
++       * - there can be random spaces
++       */
++      struct hd_media_device_path hddp;
++      unsigned long tmpul;
++      char *end = NULL, c;
++      char tmps[19] = "0x";
++      char *tmpsp;
++
++      ret = 42;
++
++      hddp.type = GRUB_EFI_MEDIA_DEVICE_PATH_TYPE;
++      hddp.subtype = GRUB_EFI_HARD_DRIVE_DEVICE_PATH_SUBTYPE;
++      hddp.length = ret;
++
++      //pos += grub_strcspn(pos, '(');
++      pos = get_next_param(pos, &end, &c);
++      if (!*pos)
++	{
++broken_hd:
++	  finish_param_parse(pos, &end, &c);
++	  return 0;
++	}
++      grub_strncpy(tmps+2, pos, 16);
++      tmps[18] = '\0';
++      tmpsp = tmps;
++      safe_parse_maxulong(&tmpsp, &tmpul);
++      hddp.partition = tmpul;
++
++      pos = get_next_param(pos, &end, &c);
++      if (!*pos)
++	goto broken_hd;
++      grub_strcpy(tmps+2, pos);
++      tmpsp = tmps;
++      safe_parse_maxulong(&tmpsp, &tmpul);
++      hddp.startlba = tmpul;
++
++      pos = get_next_param(pos, &end, &c);
++      if (!*pos)
++	goto broken_hd;
++      grub_strcpy(tmps+2, pos);
++      tmpsp = tmps;
++      safe_parse_maxulong(&tmpsp, &tmpul);
++      hddp.size = tmpul;
++
++      pos = get_next_param(pos, &end, &c);
++      if (!*pos)
++	goto broken_hd;
++      if (!grub_strcmp(pos, "None"))
++	{
++	  hddp.signature_type = 0;
++	  grub_memset(hddp.signature, '\0', sizeof(hddp.signature));
++	}
++      else if (grub_strnlen(pos, 36) == 8)
++        {
++	  grub_efi_uint32_t tmpu32;
++	  grub_strncpy(tmps+2, pos, 8);
++	  tmps[10] = '\0';
++	  tmpsp = tmps;
++	  safe_parse_maxulong(&tmpsp, &tmpul);
++	  tmpu32 = tmpul;
++	  hddp.signature_type = 1;
++	  grub_memcpy(hddp.signature, &tmpu32, sizeof(tmpu32));
++	}
++      else if (grub_strnlen(pos, 36) == 36)
++	{
++	  grub_efi_uint32_t tmpu32;
++	  grub_efi_uint16_t tmpu16;
++	  grub_efi_uint8_t tmpu8;
++
++	  grub_strncpy(tmps+2, pos, 8);
++	  tmps[10] = '\0';
++	  tmpsp = tmps;
++	  safe_parse_maxulong(&tmpsp, &tmpul);
++	  tmpu32 = tmpul;
++	  grub_memcpy(hddp.signature, &tmpu32, sizeof(tmpu32));
++
++	  grub_strncpy(tmps+2, pos+9, 4);
++	  tmps[6] = '\0';
++	  tmpsp = tmps;
++	  safe_parse_maxulong(&tmpsp, &tmpul);
++	  tmpu16 = tmpul;
++	  grub_memcpy(hddp.signature + 4, &tmpu16, sizeof(tmpu16));
++
++	  grub_strncpy(tmps+2, pos+14, 4);
++	  tmps[6] = '\0';
++	  tmpsp = tmps;
++	  safe_parse_maxulong(&tmpsp, &tmpul);
++	  tmpu16 = tmpul;
++	  grub_memcpy(hddp.signature + 6, &tmpu16, sizeof(tmpu16));
++
++	  /* these are displayed like a u16, but they're a u8.  thanks. */
++	  grub_strncpy(tmps+2, pos+19, 2);
++	  tmps[4] = '\0';
++	  tmpsp = tmps;
++	  safe_parse_maxulong(&tmpsp, &tmpul);
++	  tmpu8 = tmpul;
++	  grub_memcpy(hddp.signature + 8, &tmpu8, sizeof(tmpu8));
++	  grub_strncpy(tmps+2, pos+21, 2);
++	  tmps[4] = '\0';
++	  tmpsp = tmps;
++	  safe_parse_maxulong(&tmpsp, &tmpul);
++	  tmpu8 = tmpul;
++	  grub_memcpy(hddp.signature + 9, &tmpu8, sizeof(tmpu8));
++
++	  grub_strncpy(tmps+2, pos+24, 2);
++	  tmps[4] = '\0';
++	  tmpsp = tmps;
++	  safe_parse_maxulong(&tmpsp, &tmpul);
++	  tmpu8 = tmpul;
++	  grub_memcpy(hddp.signature + 10, &tmpu8, sizeof(tmpu8));
++
++	  grub_strncpy(tmps+2, pos+26, 2);
++	  tmps[4] = '\0';
++	  tmpsp = tmps;
++	  safe_parse_maxulong(&tmpsp, &tmpul);
++	  tmpu8 = tmpul;
++	  grub_memcpy(hddp.signature + 11, &tmpu8, sizeof(tmpu8));
++
++	  grub_strncpy(tmps+2, pos+28, 2);
++	  tmps[4] = '\0';
++	  tmpsp = tmps;
++	  safe_parse_maxulong(&tmpsp, &tmpul);
++	  tmpu8 = tmpul;
++	  grub_memcpy(hddp.signature + 12, &tmpu8, sizeof(tmpu8));
++
++	  grub_strncpy(tmps+2, pos+30, 2);
++	  tmps[4] = '\0';
++	  tmpsp = tmps;
++	  safe_parse_maxulong(&tmpsp, &tmpul);
++	  tmpu8 = tmpul;
++	  grub_memcpy(hddp.signature + 13, &tmpu8, sizeof(tmpu8));
++
++	  grub_strncpy(tmps+2, pos+32, 2);
++	  tmps[4] = '\0';
++	  tmpsp = tmps;
++	  safe_parse_maxulong(&tmpsp, &tmpul);
++	  tmpu8 = tmpul;
++	  grub_memcpy(hddp.signature + 14, &tmpu8, sizeof(tmpu8));
++
++	  grub_strncpy(tmps+2, pos+34, 2);
++	  tmps[4] = '\0';
++	  tmpsp = tmps;
++	  safe_parse_maxulong(&tmpsp, &tmpul);
++	  tmpu8 = tmpul;
++	  grub_memcpy(hddp.signature + 15, &tmpu8, sizeof(tmpu8));
++
++	  hddp.signature_type = 2;
++	}
++      else
++	goto broken_hd;
++
++      hddp.mbr_type = hddp.signature_type;
++
++      if (data)
++	grub_memcpy(data, &hddp, sizeof(hddp));
++    }
++  else if (dpname_matches(str, "cd"))
++    {
++    }
++  else if (dpname_matches(str, "file"))
++    {
++    }
++  else if (dpname_matches(str, "protocol"))
++    {
++    }
++    /* what about piwg firmware file? */
++    /* what about piwg firmware volume? */
++    /* what about relative offset media */
++  else if (dpname_matches(str, "bios"))
++    {
++    }
++  /* This is the end beautiful friend */
++  else if (dpname_matches(str, "EndEntire$"))
++    {
++      struct generic_device_path gdp = {
++	      .type = GRUB_EFI_END_DEVICE_PATH_TYPE,
++	      .subtype = GRUB_EFI_END_ENTIRE_DEVICE_PATH_SUBTYPE,
++	      .length = 4
++      };
++      ret = 4;
++      if (data)
++	grub_memmove(data, &gdp, sizeof(gdp));
++    }
++  else if (dpname_matches(str, "EndThis$"))
++    {
++      struct generic_device_path gdp = {
++	      .type = GRUB_EFI_END_DEVICE_PATH_TYPE,
++	      .subtype = GRUB_EFI_END_THIS_DEVICE_PATH_SUBTYPE,
++	      .length = 4
++      };
++      ret = 4;
++      if (data)
++	grub_memmove(data, &gdp, sizeof(gdp));
++    }
++  else if (dpname_matches(str, "EndUnknown$"))
++    {
++      struct generic_device_path gdp = {
++	      .type = GRUB_EFI_END_DEVICE_PATH_TYPE,
++	      .subtype = GRUB_EFI_END_ENTIRE_DEVICE_PATH_SUBTYPE,
++	      .length = 4
++      };
++      ret = 4;
++      if (data)
++	grub_memmove(data, &gdp, sizeof(gdp));
++    }
++  /* handle anything we didn't recognize */
++  else if (dpname_matches(str, "vendor"))
++    {
++      /* needs to handle:
++       * 1) hw vendor
++       * 2) messaging vendor
++       * 3) media vendor
++       */
++    }
++  else
++    {
++    }
++
++  return ret;
++}
++
++grub_efi_device_path_t *
++device_path_from_utf8 (const char *device)
++{
++  grub_size_t device_len;
++  grub_efi_device_path_t *dp = NULL;
++
++  device_len = parse_device_path_component(device, dp);
++  device_len += parse_device_path_component("EndEntire", dp);
++  dp = grub_malloc(device_len);
++  if (!dp)
++    return NULL;
++  device_len = parse_device_path_component(device, dp);
++  device_len += parse_device_path_component("EndEntire",
++				     (void *)((unsigned long)dp + device_len));
++
++
++  return dp;
++}
+diff --git a/efi/efimisc.c b/efi/efimisc.c
+index a319fdd..480ba25 100644
+--- a/efi/efimisc.c
++++ b/efi/efimisc.c
+@@ -108,6 +108,79 @@ grub_real_dprintf (const char *file, const int line, const char *condition,
+   va_end (args);
+ }
+ 
++grub_size_t
++grub_utf8_char_len(grub_uint8_t ch)
++{
++  return ((0xe5000000 >> ((ch >> 3) & 0x1e)) & 3) + 1;
++}
++
++#define UTF8_SHIFT_AND_MASK(unicode, byte)  (unicode)<<=6; (unicode) |= (0x3f & (byte))
++
++/* convert utf8 to utf32 */
++grub_uint32_t
++grub_utf8_to_utf32(const grub_uint8_t *src, grub_size_t length)
++{
++  grub_uint32_t unicode;
++
++  switch (length)
++    {
++    case 1:
++      return src[0];
++    case 2:
++      unicode = src[0] & 0x1f;
++      UTF8_SHIFT_AND_MASK(unicode, src[1]);
++      return unicode;
++    case 3:
++      unicode = src[0] & 0x0f;
++      UTF8_SHIFT_AND_MASK(unicode, src[1]);
++      UTF8_SHIFT_AND_MASK(unicode, src[2]);
++      return unicode;
++    case 4:
++      unicode = src[0] & 0x07;
++      UTF8_SHIFT_AND_MASK(unicode, src[1]);
++      UTF8_SHIFT_AND_MASK(unicode, src[2]);
++      UTF8_SHIFT_AND_MASK(unicode, src[3]);
++      return unicode;
++    default:
++      return 0xffff;
++    }
++}
++
++/* convert utf8 to utf16 */
++void
++grub_utf8_to_utf16(const grub_uint8_t *src, grub_size_t srclen,
++		   grub_uint16_t *dst, grub_size_t dstlen)
++{
++  const grub_uint8_t *end = src + srclen;
++  grub_efi_char16_t *dstend = dst + dstlen;
++
++  while (src < end && dst < dstend)
++    {
++      grub_size_t len = grub_utf8_char_len(*src);
++      /* get the utf32 codepoint */
++      grub_uint32_t codepoint = grub_utf8_to_utf32(src, len);
++
++      /* convert that codepoint to utf16 codepoints */
++      if (codepoint <= 0xffff)
++	{
++	  /* it's a single utf16 character */
++	  *dst++ = (grub_efi_char16_t) codepoint;
++	}
++      else
++	{
++	  /* it's multiple utf16 characters, with surrogate pairs */
++	  codepoint = codepoint - 0x10000;
++	  *dst++ = (grub_efi_char16_t) ((codepoint >> 10) + 0xd800);
++	  *dst++ = (grub_efi_char16_t) ((codepoint & 0x3ff) + 0xdc00);
++	}
++
++	src += len;
++    }
++
++  if (dst < dstend)
++    *dst = 0;
++}
++
+ /* Convert UTF-16 to UTF-8.  */
+ grub_uint8_t *
+ grub_utf16_to_utf8 (grub_uint8_t *dest, grub_uint16_t *src,
+diff --git a/efi/grub/efi/api.h b/efi/grub/efi/api.h
+index 6743a0b..8f75a68 100644
+--- a/efi/grub/efi/api.h
++++ b/efi/grub/efi/api.h
+@@ -90,6 +90,11 @@
+     { 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b } \
+   }
+ 
++#define GRUB_EFI_DEVICE_PATH_FROM_TEXT_GUID	\
++  { 0x05c99a21, 0xc70f, 0x4ad2, \
++    { 0x8a, 0x5f, 0x35, 0xdf, 0x33, 0x43, 0xf5, 0x1e } \
++  }
++
+ #define GRUB_EFI_GRAPHICS_OUTPUT_GUID	\
+   { 0x9042a9de, 0x23dc, 0x4a38, \
+     { 0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a } \
+@@ -553,7 +558,7 @@ struct grub_efi_hard_drive_device_path
+   grub_efi_uint32_t partition_number;
+   grub_efi_lba_t partition_start;
+   grub_efi_lba_t partition_size;
+-  grub_efi_uint8_t partition_signature[8];
++  grub_efi_uint8_t partition_signature[16];
+   grub_efi_uint8_t mbr_type;
+   grub_efi_uint8_t signature_type;
+ };
+@@ -615,6 +620,13 @@ struct grub_efi_bios_device_path
+ };
+ typedef struct grub_efi_bios_device_path grub_efi_bios_device_path_t;
+ 
++struct grub_efi_device_path_from_text
++{
++  grub_efi_device_path_t * (*convert_text_to_device_node) (const grub_efi_char16_t *text_device_node);
++  grub_efi_device_path_t * (*convert_text_to_device_path) (const grub_efi_char16_t *text_device_path);
++};
++typedef struct grub_efi_device_path_from_text grub_efi_device_path_from_text_t;
++
+ struct grub_efi_open_protocol_information_entry
+ {
+   grub_efi_handle_t agent_handle;
+diff --git a/efi/grub/efi/misc.h b/efi/grub/efi/misc.h
+index b089904..7dc34e7 100644
+--- a/efi/grub/efi/misc.h
++++ b/efi/grub/efi/misc.h
+@@ -43,4 +43,16 @@ int grub_get_drive_partition_from_bdev_handle (grub_efi_handle_t handle,
+ char *grub_efi_file_path_to_path_name (grub_efi_device_path_t *file_path);
+ void grub_load_saved_default (grub_efi_handle_t dev_handle);
+ 
++grub_efi_device_path_t *
++find_last_device_path (const grub_efi_device_path_t *dp);
++grub_efi_device_path_t *
++duplicate_device_path (const grub_efi_device_path_t *dp);
++int
++compare_device_paths (const grub_efi_device_path_t *dp1,
++		      const grub_efi_device_path_t *dp2);
++grub_efi_device_path_t *
++device_path_from_utf8 (const char *device);
++
++extern grub_efi_guid_t simple_file_system_guid;
++
+ #endif /* ! GRUB_EFI_MISC_HEADER */
+diff --git a/efi/grub/misc.h b/efi/grub/misc.h
+index 5ec54d5..5ef2226 100644
+--- a/efi/grub/misc.h
++++ b/efi/grub/misc.h
+@@ -36,6 +36,10 @@ void grub_real_dprintf (const char *file,
+ void grub_exit (void) __attribute__ ((noreturn));
+ void grub_abort (void) __attribute__ ((noreturn));
+ void grub_fatal (const char *fmt, ...) __attribute__ ((noreturn));
++grub_size_t grub_utf8_char_len(grub_uint8_t ch);
++grub_uint32_t grub_utf8_to_utf32(const grub_uint8_t *src, grub_size_t length);
++void grub_utf8_to_utf16(const grub_uint8_t *src, grub_size_t srclen,
++			grub_uint16_t *dst, grub_size_t dstlen);
+ grub_uint8_t *grub_utf16_to_utf8 (grub_uint8_t * dest,
+ 				  grub_uint16_t * src, grub_size_t size);
+ 
+diff --git a/stage2/builtins.c b/stage2/builtins.c
+index de356d4..ad856f8 100644
+--- a/stage2/builtins.c
++++ b/stage2/builtins.c
+@@ -905,7 +905,7 @@ static struct builtin builtin_default =
+ };
+ 
+ 
+-#ifdef GRUB_UTIL
++#if defined(GRUB_UTIL) || defined(PLATFORM_EFI)
+ /* device */
+ static int
+ device_func (char *arg, int flags)
+@@ -913,16 +913,17 @@ device_func (char *arg, int flags)
+   char *drive = arg;
+   char *device;
+ 
+-  /* Get the drive number from DRIVE.  */
+-  if (! set_device (drive))
+-    return 1;
+-
+   /* Get the device argument.  */
+   device = skip_to (0, drive);
+-  
++
++  nul_terminate (drive);
+   /* Terminate DEVICE.  */
+   nul_terminate (device);
+ 
++  /* Get the drive number from DRIVE.  */
++  if (! set_device (drive))
++    return 1;
++
+   if (! *device || ! check_device (device))
+     {
+       errnum = ERR_FILE_NOT_FOUND;
+@@ -930,7 +931,7 @@ device_func (char *arg, int flags)
+     }
+ 
+   assign_device_name (current_drive, device);
+-  
++
+   return 0;
+ }
+ 
+@@ -941,9 +942,20 @@ static struct builtin builtin_device =
+   BUILTIN_MENU | BUILTIN_CMDLINE | BUILTIN_HELP_LIST,
+   "device DRIVE DEVICE",
+   "Specify DEVICE as the actual drive for a BIOS drive DRIVE. This command"
+-  " can be used only in the grub shell."
++  " can be used only in the grub shell and in EFI."
+ };
+-#endif /* GRUB_UTIL */
++#endif /* defined(GRUB_UTIL) || defined(PLATFORM_EFI) */
++#ifdef PLATFORM_EFI
++static struct builtin builtin_efimap =
++{
++  "efimap",
++  device_func,
++  BUILTIN_MENU | BUILTIN_CMDLINE | BUILTIN_HELP_LIST,
++  "efimap DRIVE DEVICE",
++  "Specify DEVICE as the actual drive for a BIOS drive DRIVE. This command"
++  " can be used only in EFI."
++};
++#endif /* PLATFORM_EFI */
+ 
+ 
+ #ifdef SUPPORT_NETBOOT
+@@ -5169,9 +5181,9 @@ struct builtin *builtin_table[] =
+   &builtin_configfile,
+   &builtin_debug,
+   &builtin_default,
+-#ifdef GRUB_UTIL
++#if defined(GRUB_UTIL) || defined(PLATFORM_EFI)
+   &builtin_device,
+-#endif /* GRUB_UTIL */
++#endif /* defined(GRUB_UTIL) || defined(PLATFORM_EFI) */
+ #ifdef SUPPORT_NETBOOT
+   &builtin_dhcp,
+ #endif /* SUPPORT_NETBOOT */
+@@ -5182,6 +5194,9 @@ struct builtin *builtin_table[] =
+ #ifdef GRUB_UTIL
+   &builtin_dump,
+ #endif /* GRUB_UTIL */
++#ifdef PLATFORM_EFI
++  &builtin_efimap,
++#endif
+ #ifndef PLATFORM_EFI
+   &builtin_embed,
+ #endif
+diff --git a/stage2/shared.h b/stage2/shared.h
+index 6882027..08964a3 100644
+--- a/stage2/shared.h
++++ b/stage2/shared.h
+@@ -1043,6 +1043,8 @@ void init_bios_info (void);
+ #ifdef PLATFORM_EFI
+ void grub_set_config_file (char *path_name);
+ int grub_save_saved_default (int new_default);
++extern int check_device (const char *device);
++extern void assign_device_name (int drive, const char *device);
+ #endif
+ int grub_load_linux (char *kernel, char *arg);
+ int grub_load_initrd (char *initrd);
+-- 
+1.7.2
+

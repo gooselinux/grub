@@ -1,0 +1,90 @@
+From cbb7e3d28164467b104814484965d30333d529ba Mon Sep 17 00:00:00 2001
+From: Lubomir Rintel <lkundrak@v3.sk>
+Date: Sun, 11 Jan 2009 12:04:10 +0100
+Subject: [PATCH] Obey 2.06 boot protocol's cmdline_size
+
+This increases the limit for the command line according to kernel's
+setting, up to 0x7FF characters. This limit was chosen because it
+matches current kernel's limitation and doesn't need substantial
+change in memory layout, consuming only spare space (and leaving
+once as much bytes spare for possible future expansion).
+
+Bug Report: https://bugzilla.redhat.com/attachment.cgi?id=327541
+---
+ stage2/boot.c   |   13 +++++++++++--
+ stage2/shared.h |    7 +++++--
+ 2 files changed, 16 insertions(+), 4 deletions(-)
+
+diff --git a/stage2/boot.c b/stage2/boot.c
+index eee8bb1..2267721 100644
+--- a/stage2/boot.c
++++ b/stage2/boot.c
+@@ -228,6 +228,7 @@ load_image (char *kernel, char *arg, kernel_t suggested_type,
+     {
+       int big_linux = 0;
+       int setup_sects = lh->setup_sects;
++      int cmdline_size = 0xff;
+ 
+       if (lh->header == LINUX_MAGIC_SIGNATURE && lh->version >= 0x0200)
+ 	{
+@@ -255,6 +256,14 @@ load_image (char *kernel, char *arg, kernel_t suggested_type,
+ 	      lh->cl_offset = LINUX_CL_OFFSET;
+ 	      lh->setup_move_size = LINUX_SETUP_MOVE_SIZE;
+ 	    }
++
++	  if (lh->version >= 0x0206)
++	    {
++	      cmdline_size = lh->cmdline_size;
++	      if (cmdline_size > (LINUX_CL_END_OFFSET - LINUX_CL_OFFSET))
++		cmdline_size = LINUX_CL_END_OFFSET - LINUX_CL_OFFSET;
++	    }
++
+ 	}
+       else
+ 	{
+@@ -411,7 +420,7 @@ load_image (char *kernel, char *arg, kernel_t suggested_type,
+ 	    char *src = skip_to (0, arg);
+ 	    char *dest = linux_data_tmp_addr + LINUX_CL_OFFSET;
+ 	
+-	    while (dest < linux_data_tmp_addr + LINUX_CL_END_OFFSET && *src)
++	    while (dest < linux_data_tmp_addr + LINUX_CL_OFFSET + cmdline_size && *src)
+ 	      *(dest++) = *(src++);
+ 	
+ 	    /* Old Linux kernels have problems determining the amount of
+@@ -432,7 +441,7 @@ load_image (char *kernel, char *arg, kernel_t suggested_type,
+ 	    if (! grub_strstr (arg, "mem=")
+ 		&& ! (load_flags & KERNEL_LOAD_NO_MEM_OPTION)
+ 		&& lh->version < 0x0203		/* kernel version < 2.4.18 */
+-		&& dest + 15 < linux_data_tmp_addr + LINUX_CL_END_OFFSET)
++		&& dest + 15 < linux_data_tmp_addr + LINUX_CL_OFFSET + cmdline_size)
+ 	      {
+ 		*dest++ = ' ';
+ 		*dest++ = 'm';
+diff --git a/stage2/shared.h b/stage2/shared.h
+index 93f586f..49711af 100644
+--- a/stage2/shared.h
++++ b/stage2/shared.h
+@@ -162,8 +162,8 @@ extern void *grub_scratch_mem;
+ #define LINUX_VID_MODE_ASK		0xFFFD
+ 
+ #define LINUX_CL_OFFSET			0x9000
+-#define LINUX_CL_END_OFFSET		0x90FF
+-#define LINUX_SETUP_MOVE_SIZE		0x9100
++#define LINUX_CL_END_OFFSET		0x97FF
++#define LINUX_SETUP_MOVE_SIZE		0x9800
+ #define LINUX_CL_MAGIC			0xA33F
+ 
+ /*
+@@ -423,6 +423,9 @@ struct linux_kernel_header
+   unsigned short pad1;			/* Unused */
+   char *cmd_line_ptr;			/* Points to the kernel command line */
+   unsigned int initrd_addr_max;		/* The highest address of initrd */
++  unsigned int kernel_alignment;	/* Physical addr alignment required for kernel */
++  unsigned int relocatable_kernel;	/* Whether kernel is relocatable or not */
++  unsigned int cmdline_size;		/* Maximum size of the kernel command line */
+ } __attribute__ ((packed));
+ 
+ /* Memory map address range descriptor used by GET_MMAP_ENTRY. */
+-- 
+1.5.5.6
+

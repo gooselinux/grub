@@ -1,0 +1,32 @@
+From 30c800b1fb63063708adbf8c168dd21ca694e51f Mon Sep 17 00:00:00 2001
+From: Peter Jones <pjones@redhat.com>
+Date: Tue, 7 Apr 2009 16:27:32 -0400
+Subject: [PATCH] Always build grub_tolower() in.
+
+---
+ stage2/char_io.c |    2 --
+ 1 files changed, 0 insertions(+), 2 deletions(-)
+
+diff --git a/stage2/char_io.c b/stage2/char_io.c
+index c4bce1a..9104eed 100644
+--- a/stage2/char_io.c
++++ b/stage2/char_io.c
+@@ -1107,7 +1107,6 @@ safe_parse_maxint (char **str_ptr, int *myint_ptr)
+ }
+ #endif /* STAGE1_5 */
+ 
+-#if !defined(STAGE1_5) || defined(FSYS_FAT)
+ int
+ grub_tolower (int c)
+ {
+@@ -1116,7 +1115,6 @@ grub_tolower (int c)
+ 
+   return c;
+ }
+-#endif /* ! STAGE1_5 || FSYS_FAT */
+ 
+ int
+ grub_isspace (int c)
+-- 
+1.6.2
+

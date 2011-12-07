@@ -1,0 +1,1440 @@
+From a9ed8a1143b719127771358e505bccb4a7f27efd Mon Sep 17 00:00:00 2001
+From: Peter Jones <pjones@redhat.com>
+Date: Tue, 31 Mar 2009 14:55:00 +0500
+Subject: [PATCH] add basic pxe boot support in efi
+
+---
+ efi/Makefile.am    |    2 +-
+ efi/byteswap.h     |   37 +++++
+ efi/dhcp.h         |  133 ++++++++++++++++
+ efi/eficore.c      |   12 ++
+ efi/efimain.c      |   41 ++++--
+ efi/efimisc.c      |   14 +-
+ efi/efitftp.c      |  179 +++++++++++++++++++++
+ efi/grub/efi/efi.h |    6 +
+ efi/pxe.c          |  445 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+ efi/pxe.h          |  237 ++++++++++++++++++++++++++++
+ grub/Makefile.am   |    2 +-
+ grub/efitftp.c     |   34 ++++
+ stage2/Makefile.am |    4 +-
+ stage2/disk_io.c   |   17 ++-
+ stage2/efistubs.c  |    7 +
+ stage2/efistubs.h  |    8 +
+ stage2/filesys.h   |   13 ++-
+ 17 files changed, 1165 insertions(+), 26 deletions(-)
+ create mode 100644 efi/byteswap.h
+ create mode 100644 efi/dhcp.h
+ create mode 100644 efi/efitftp.c
+ create mode 100644 efi/pxe.c
+ create mode 100644 efi/pxe.h
+ create mode 100644 grub/efitftp.c
+ create mode 100644 stage2/efistubs.c
+ create mode 100644 stage2/efistubs.h
+
+diff --git a/efi/Makefile.am b/efi/Makefile.am
+index 4d97dbe..129c8d0 100644
+--- a/efi/Makefile.am
++++ b/efi/Makefile.am
+@@ -72,7 +72,7 @@ noinst_LIBRARIES = libgrubefi.a
+ libgrubefi_a_SOURCES = $(EFI_ARCH)/callwrap.c eficore.c efimm.c efimisc.c \
+ 	$(EFI_ARCH)/setjmp.S eficon.c efidisk.c graphics.c efigraph.c efiuga.c \
+ 	font_8x16.c efiserial.c $(EFI_ARCH)/loader/linux.c efichainloader.c \
+-	xpm.c
++	xpm.c pxe.c efitftp.c
+ libgrubefi_a_CFLAGS = $(RELOC_FLAGS) -nostdinc
+ 
+ endif
+diff --git a/efi/byteswap.h b/efi/byteswap.h
+new file mode 100644
+index 0000000..5a057c4
+--- /dev/null
++++ b/efi/byteswap.h
+@@ -0,0 +1,37 @@
++#ifndef BYTESWAP_H
++#define BYTESWAP_H 1
++
++#if defined(__i386__)
++#define LITTLE_ENDIAN 1
++#elif defined(__x86_64__)
++#define LITTLE_ENDIAN 1
++#else
++#error endian not defined
++#endif
++
++#define bswap_16(x) \
++     ((((x) >> 8) & 0xff) | (((x) & 0xff) << 8))
++
++#define bswap_32(x) \
++     ((((x) & 0xff000000) >> 24) | (((x) & 0x00ff0000) >>  8) |		      \
++      (((x) & 0x0000ff00) <<  8) | (((x) & 0x000000ff) << 24))
++
++static inline grub_efi_uint16_t htons(grub_efi_uint16_t hostshort)
++{
++#ifdef LITTLE_ENDIAN
++	return bswap_16(hostshort);
++#else
++	return hostshort;
++#endif
++}
++
++static inline grub_efi_uint32_t htonl(grub_efi_uint32_t hostshort)
++{
++#ifdef LITTLE_ENDIAN
++	return bswap_32(hostshort);
++#else
++	return hostshort;
++#endif
++}
++
++#endif /* BYTESWAP_H */
+diff --git a/efi/dhcp.h b/efi/dhcp.h
+new file mode 100644
+index 0000000..a82a522
+--- /dev/null
++++ b/efi/dhcp.h
+@@ -0,0 +1,133 @@
++#ifndef DHCP_H
++#define DHCP_H 1
++
++#include "pxe.h"
++
++#define EFI_DHCP4_PROTOCOL_GUID \
++{ 0x8a219718, 0x4ef5, 0x4761, {0x91,0xc8,0xc0,0xf0,0x4b,0xda,0x9e,0x56} }
++static grub_efi_guid_t DHCP4Protocol = EFI_DHCP4_PROTOCOL_GUID;
++
++#define EFI_DHCP4_SERVICE_BINDING_PROTOCOL_GUID \
++{ 0x9d9a39d8, 0xbd42, 0x4a73, {0xa4,0xd5,0x8e,0xe9,0x4b,0xe1,0x13,0x80} }
++static grub_efi_guid_t DHCP4SbProtocol = EFI_DHCP4_SERVICE_BINDING_PROTOCOL_GUID;
++
++#define EFI_PXE_DHCP4_PROTOCOL_GUID \
++{ 0x03c4e624, 0xac28, 0x11d3, {0x9a,0x2d,0x00,0x90,0x29,0x3f,0xc1,0x4d} }
++static grub_efi_guid_t PxeDHCP4Protocol = EFI_PXE_DHCP4_PROTOCOL_GUID;
++
++
++typedef EFI_STATUS (*EFI_DHCP4_GET_MODE_DATA)();
++typedef EFI_STATUS (*EFI_DHCP4_CONFIGURE)();
++typedef EFI_STATUS (*EFI_DHCP4_START)();
++typedef EFI_STATUS (*EFI_DHCP4_RENEW_REBIND)();
++typedef EFI_STATUS (*EFI_DHCP4_RELEASE)();
++typedef EFI_STATUS (*EFI_DHCP4_STOP)();
++typedef EFI_STATUS (*EFI_DHCP4_BUILD)();
++typedef EFI_STATUS (*EFI_DHCP4_TRANSMIT_RECIEVE)();
++typedef EFI_STATUS (*EFI_DHCP4_PARSE)();
++
++typedef struct _EFI_DHCP4_PROTOCOL {
++	EFI_DHCP4_GET_MODE_DATA GetModeData;
++	EFI_DHCP4_CONFIGURE Configure;
++	EFI_DHCP4_START Start;
++	EFI_DHCP4_RENEW_REBIND RenewRebind;
++	EFI_DHCP4_RELEASE Release;
++	EFI_DHCP4_STOP Stop;
++	EFI_DHCP4_BUILD Build;
++	EFI_DHCP4_TRANSMIT_RECIEVE TransmitReceive;
++	EFI_DHCP4_PARSE Parse;
++} EFI_DHCP4_PROTOCOL;
++
++typedef enum {
++	Dhcp4Stopped,
++	Dhcp4Init,
++	Dhcp4Selecting,
++	Dhcp4Requesting,
++	Dhcp4Bound,
++	Dhcp4Renewing,
++	Dhcp4Rebinding,
++	Dhcp4InitReboot,
++	Dhcp4Rebooting,
++} EFI_DHCP4_STATE;
++
++typedef enum {
++	Dhcp4SendDiscover = 0x1,
++	Dhcp4RcvdOffer,
++	Dhcp4SelectOffer,
++	Dhcp4SendRequest,
++	Dhcp4RcvdAck,
++	Dhcp4RcvdNak,
++	Dhcp4SendDecline,
++	Dhcp4BoundCompleted,
++	Dhcp4EnterRenewing,
++	Dhcp4EnterRebinding,
++	Dhcp4AddressLost,
++	Dhcp4Fail,
++} EFI_DHCP4_EVENT;
++
++typedef struct {
++	grub_efi_uint8_t OpCode;
++	grub_efi_uint8_t HwType;
++	grub_efi_uint8_t HwAddrLen;
++	grub_efi_uint8_t Hops;
++	grub_efi_uint32_t xid;
++	grub_efi_uint16_t Seconds;
++	grub_efi_uint16_t reserved;
++	EFI_IPv4_ADDRESS ClientAddr;
++	EFI_IPv4_ADDRESS YourAddr;
++	EFI_IPv4_ADDRESS ServerAddr;
++	EFI_IPv4_ADDRESS GatewayAddr;
++	grub_efi_uint8_t ClientHwAddr[16];
++	char ServerName[64];
++	char BootFileName[128];
++} EFI_DHCP4_HEADER;
++
++typedef struct {
++	grub_efi_uint32_t Size;
++	grub_efi_uint32_t Length;
++	struct {
++		EFI_DHCP4_HEADER Header;
++		grub_efi_uint32_t Magik;
++		grub_efi_uint8_t option[];
++	} Dhcp4;
++} EFI_DHCP4_PACKET;
++
++typedef struct {
++	grub_efi_uint8_t OpCode;
++	grub_efi_uint8_t Length;
++	grub_efi_uint8_t Data[1];
++} EFI_DHCP4_PACKET_OPTION;
++
++typedef EFI_STATUS (*EFI_DHCP4_CALLBACK) (
++	EFI_DHCP4_PROTOCOL *This,
++	void *Context,
++	EFI_DHCP4_STATE CurrentState,
++	EFI_DHCP4_EVENT Dhcp4Event,
++	EFI_DHCP4_PACKET *Packet,
++	EFI_DHCP4_PACKET **NewPacket);
++
++typedef struct {
++	grub_efi_uint32_t DiscoverTryCount;
++	grub_efi_uint32_t *DiscoverTimeout;
++	grub_efi_uint32_t RequestTryCount;
++	grub_efi_uint32_t *RequestTimeout;
++	EFI_IPv4_ADDRESS ClientAddress;
++	EFI_DHCP4_CALLBACK Dhcp4Callback;
++	void *CallbackContext;
++	grub_efi_uint32_t OptionCount;
++	EFI_DHCP4_PACKET_OPTION **OptionList;
++} EFI_DHCP4_CONFIG_DATA;
++
++typedef struct {
++	EFI_DHCP4_STATE State;
++	EFI_DHCP4_CONFIG_DATA ConfigData;
++	EFI_IPv4_ADDRESS ClientAddress;
++	EFI_MAC_ADDRESS ClientMacAddress;
++	EFI_IPv4_ADDRESS ServerAddress;
++	EFI_IPv4_ADDRESS RouterAddress;
++	EFI_IPv4_ADDRESS SubnetMask;
++	grub_efi_uint32_t LeaseTime;
++	EFI_DHCP4_PACKET *ReplyPacket;
++} EFI_DHCP4_MODE_DATA;
++
++#endif /* DHCP_H */
+diff --git a/efi/eficore.c b/efi/eficore.c
+index 394d82d..8052a14 100644
+--- a/efi/eficore.c
++++ b/efi/eficore.c
+@@ -38,6 +38,18 @@ static grub_efi_guid_t console_control_guid = GRUB_EFI_CONSOLE_CONTROL_GUID;
+ static grub_efi_guid_t loaded_image_guid = GRUB_EFI_LOADED_IMAGE_GUID;
+ static grub_efi_guid_t device_path_guid = GRUB_EFI_DEVICE_PATH_GUID;
+ 
++grub_efi_status_t
++grub_efi_locate_handle_buffer (grub_efi_locate_search_type_t search_type,
++				grub_efi_guid_t *protocol,
++				void *search_key,
++				grub_efi_uintn_t *no_handles,
++				grub_efi_handle_t **buffer)
++{
++	return Call_Service_5(
++		grub_efi_system_table->boot_services->locate_handle_buffer,
++		search_type, protocol, search_key, no_handles, buffer);
++}
++
+ void *
+ grub_efi_locate_protocol (grub_efi_guid_t *protocol, void *registration)
+ {
+diff --git a/efi/efimain.c b/efi/efimain.c
+index ed73ca2..e1a1e66 100644
+--- a/efi/efimain.c
++++ b/efi/efimain.c
+@@ -24,6 +24,9 @@
+ #include <grub/misc.h>
+ 
+ #include <shared.h>
++#include <efistubs.h>
++
++#include "pxe.h"
+ 
+ #define GRUB_SCRATCH_MEM_PAGES  (GRUB_SCRATCH_MEM_SIZE >> 12)
+ 
+@@ -34,25 +37,41 @@ void *grub_scratch_mem = NULL;
+ #define LOW_STACK_PAGES (LOW_STACK_SIZE >> 12)
+ static void *low_stack, *real_stack;
+ 
++extern int grub_test_pxe(grub_efi_loaded_image_t *loaded_image);
++
+ static void
+ real_main (void)
+ {
+   grub_efi_loaded_image_t *loaded_image;
+-  char *path_name;
++  char *path_name = NULL;
+ 
+   loaded_image = grub_efi_get_loaded_image (grub_efi_image_handle);
+-  grub_get_drive_partition_from_bdev_handle (loaded_image->device_handle,
+-					     &boot_drive,
+-					     &install_partition);
+-  path_name = grub_efi_file_path_to_path_name (loaded_image->file_path);
+-  if (path_name)
+-    {
+-      grub_set_config_file (path_name);
+-      grub_free (path_name);
+-    }
+-  grub_load_saved_default (loaded_image->device_handle);
++
++  path_name = grub_efi_pxe_get_config_path(loaded_image);
++
++  if (path_name) {
++    network_ready = 1;
++
++    grub_set_config_file (path_name);
++    grub_free (path_name);
++  } else {
++      grub_get_drive_partition_from_bdev_handle (loaded_image->device_handle,
++						 &boot_drive,
++						 &install_partition);
++      path_name = grub_efi_file_path_to_path_name (loaded_image->file_path);
++
++    if (path_name)
++      {
++        grub_set_config_file (path_name);
++        grub_free (path_name);
++      }
++
++    grub_load_saved_default (loaded_image->device_handle);
++  }
+ 
+   init_bios_info ();
++  while (console_getkey() < 0)
++    grub_efi_stall(1000);
+ }
+ 
+ grub_efi_status_t
+diff --git a/efi/efimisc.c b/efi/efimisc.c
+index 4818617..995be97 100644
+--- a/efi/efimisc.c
++++ b/efi/efimisc.c
+@@ -489,11 +489,15 @@ grub_set_config_file (char *path_name)
+       grub_strcpy (saved_default_file, DEFAULT_SAVED_DEFAULT_FILE_NAME);
+       return;
+     }
+-  path_name_len = dir_end + 1 - path_name;
+-  if (path_name_len + sizeof (DEFAULT_CONFIG_FILE_NAME) > 128)
+-    return;
+-  grub_memmove (config_file, path_name, path_name_len);
+-  grub_strcpy (config_file + path_name_len, DEFAULT_CONFIG_FILE_NAME);
++  if (strlen(dir_end) == 1) {
++    path_name_len = dir_end + 1 - path_name;
++    if (path_name_len + sizeof (DEFAULT_CONFIG_FILE_NAME) > 128)
++      return;
++    grub_memmove (config_file, path_name, path_name_len);
++    grub_strcpy (config_file + path_name_len, DEFAULT_CONFIG_FILE_NAME);
++  } else {
++    grub_memmove (config_file, path_name, path_name_len+1);
++  }
+   if (path_name_len + sizeof (DEFAULT_SAVED_DEFAULT_FILE_NAME) > 128)
+     return;
+   path_name_len = dir_end + 1 - path_name;
+diff --git a/efi/efitftp.c b/efi/efitftp.c
+new file mode 100644
+index 0000000..5bb5de6
+--- /dev/null
++++ b/efi/efitftp.c
+@@ -0,0 +1,177 @@
++#include <grub/efi/efi.h>
++#include <grub/efi/api.h>
++#include <grub/efi/misc.h>
++#include <grub/misc.h>
++
++#include <shared.h>
++#include <filesys.h>
++#include "pxe.h"
++
++struct tftp_info tftp_info = {
++	.LoadedImage = NULL,
++	.Pxe = NULL,
++	.ServerIp = NULL,
++	.BasePath = NULL
++};
++
++/*
++ * CLIENT MAC ADDR: 00 15 17 4C E6 74 
++ * CLIENT IP: 10.16.52.158  MASK: 255.255.255.0  DHCP IP: 10.16.52.16
++ * GATEWAY IP: 10.16.52.254 
++ *
++ * TSize.Running LoadFile()
++ *
++ * TFTP.status: 5
++ * got to grub_efi_pxe_get_config_path
++ * SiAddr: 10.16.52.16
++ * BootpHwAddr: 00:15:17:4c:e6:74:00:00:00:00:00:00:00:00:00:00
++ * BootpSrvName: 
++ * BootpBootFile: X86PC/UNDI/pxelinux/bootx64.efi
++ */
++
++grub_efi_status_t tftp_get_file_size(
++	char *Filename,
++	grub_efi_uintn_t *Size)
++{
++	EFI_PXE_BASE_CODE_TFTP_OPCODE OpCode = EFI_PXE_BASE_CODE_TFTP_GET_FILE_SIZE;
++	char Buffer[8192];
++	grub_efi_boolean_t Overwrite = 0;
++	grub_efi_boolean_t DontUseBuffer = 0;
++	grub_efi_uint64_t BufferSize = 8192;
++	grub_efi_uintn_t BlockSize = 512;
++	grub_efi_status_t rc;
++	char *FullPath = NULL;
++
++	if (tftp_info.BasePath) {
++		int PathSize = 0;
++		PathSize = strlen(tftp_info.BasePath) + 2 + strlen(Filename);
++		FullPath = grub_malloc(PathSize);
++		grub_sprintf(FullPath, "%s/%s", tftp_info.BasePath, Filename);
++	} else {
++		FullPath = grub_malloc(strlen(Filename));
++		strcpy(FullPath, Filename);
++	}
++
++	rc = Call_Service_10(tftp_info.Pxe->Mtftp, tftp_info.Pxe, OpCode,
++		Buffer, Overwrite, &BufferSize, &BlockSize, tftp_info.ServerIp,
++		FullPath, NULL, DontUseBuffer);
++	if (rc == GRUB_EFI_SUCCESS)
++		*Size = BufferSize;
++	grub_free(FullPath);
++	return rc;
++}
++
++static grub_efi_status_t tftp_read_file(
++	char *Filename,
++	char *Buffer,
++	grub_efi_uint64_t BufferSize)
++{
++	EFI_PXE_BASE_CODE_TFTP_OPCODE OpCode = EFI_PXE_BASE_CODE_TFTP_READ_FILE;
++	grub_efi_boolean_t Overwrite = 0;
++	grub_efi_boolean_t DontUseBuffer = 0;
++	grub_efi_uintn_t BlockSize = 512;
++	grub_efi_status_t rc;
++	char *FullPath = NULL;
++
++	if (tftp_info.BasePath) {
++		int PathSize = 0;
++		PathSize = strlen(tftp_info.BasePath) + 2 + strlen(Filename);
++		FullPath = grub_malloc(PathSize);
++		grub_sprintf(FullPath, "%s/%s", tftp_info.BasePath, Filename);
++	} else {
++		FullPath = grub_malloc(strlen(Filename));
++		strcpy(FullPath, Filename);
++	}
++
++	rc = Call_Service_10(tftp_info.Pxe->Mtftp, tftp_info.Pxe, OpCode,
++		Buffer, Overwrite, &BufferSize, &BlockSize, tftp_info.ServerIp,
++		FullPath, NULL, DontUseBuffer);
++	grub_free(FullPath);
++	return rc;
++}
++
++int
++efi_tftp_mount (void)
++{
++	if (current_drive != NETWORK_DRIVE) {
++		return 0;
++	}
++	return 1;
++}
++
++int
++efi_tftp_read (char *addr, int size)
++{
++	int rc;
++
++	if (tftp_info.LastPath == NULL) {
++		grub_printf(" = 0 (no path known)\n");
++		return 0;
++	}
++	if (tftp_info.Buffer == NULL) {
++		grub_printf(" = 0 (no file open)\n");
++		return 0;
++	}
++	if (filemax == -1) {
++		grub_printf(" = 0 (file not found)\n");
++		return 0;
++	}
++	if (filepos == 0) {
++		rc = tftp_read_file(tftp_info.LastPath, tftp_info.Buffer,
++				    filemax);
++	}
++
++	grub_memmove(addr, tftp_info.Buffer+filepos, size);
++	filepos += size;
++
++	return size;
++}
++
++int
++efi_tftp_dir (char *dirname)
++{
++	int rc;
++	int ch;
++	grub_efi_uintn_t size;
++	int len;
++	char *name;
++
++	ch = nul_terminate(dirname);
++	len = strlen(dirname);
++
++	name = grub_malloc(len + 1);
++	grub_memmove(name, dirname, len);
++	name[len] = '\0';
++	dirname[len] = ch;
++
++#if 0
++	if (print_possibilities)
++		return 1;
++#endif
++
++	filemax = -1;
++
++	rc = tftp_get_file_size(name, &size);
++	if (rc == 0) {
++		tftp_info.LastPath = grub_malloc(strlen(name) + 1);
++		sprintf(tftp_info.LastPath, "%s", name);
++		filemax = size;
++		filepos = 0;
++
++		tftp_info.Buffer = grub_malloc(filemax);
++
++		return 1;
++	}
++	return 0;
++}
++
++void
++efi_tftp_close (void)
++{
++	filepos = 0;
++	filemax = -1;
++	grub_free(tftp_info.LastPath);
++	tftp_info.LastPath = NULL;
++	grub_free(tftp_info.Buffer);
++	tftp_info.Buffer = NULL;
++}
+diff --git a/efi/grub/efi/efi.h b/efi/grub/efi/efi.h
+index 0424fbb..7078af8 100644
+--- a/efi/grub/efi/efi.h
++++ b/efi/grub/efi/efi.h
+@@ -25,6 +25,12 @@
+ #include <grub/efi/api.h>
+ 
+ /* Functions.  */
++grub_efi_status_t
++grub_efi_locate_handle_buffer (grub_efi_locate_search_type_t search_type,
++				grub_efi_guid_t *protocol,
++				void *search_key,
++				grub_efi_uintn_t *no_handles,
++				grub_efi_handle_t **buffer);
+ void *grub_efi_locate_protocol (grub_efi_guid_t * protocol,
+ 				void *registration);
+ grub_efi_handle_t *grub_efi_locate_handle (grub_efi_locate_search_type_t
+diff --git a/efi/pxe.c b/efi/pxe.c
+new file mode 100644
+index 0000000..8a15f20
+--- /dev/null
++++ b/efi/pxe.c
+@@ -0,0 +1,445 @@
++
++#include <grub/efi/efi.h>
++#include <grub/efi/api.h>
++#include <grub/efi/misc.h>
++#include <grub/misc.h>
++
++#include <shared.h>
++#include <stddef.h>
++
++#include "pxe.h"
++#include "dhcp.h"
++
++/* Search path is:
++ *
++ * X86PC/UNDI/pxelinux/pxelinux.cfg/1902dcf5-7190-d811-bbd6-6ef21c690030
++ * X86PC/UNDI/pxelinux/pxelinux.cfg/01-00-30-6e-f2-1c-69
++ * X86PC/UNDI/pxelinux/pxelinux.cfg/0A103437
++ * X86PC/UNDI/pxelinux/pxelinux.cfg/0A10343
++ * X86PC/UNDI/pxelinux/pxelinux.cfg/0A1034
++ * X86PC/UNDI/pxelinux/pxelinux.cfg/0A103
++ * X86PC/UNDI/pxelinux/pxelinux.cfg/0A10
++ * X86PC/UNDI/pxelinux/pxelinux.cfg/0A1
++ * X86PC/UNDI/pxelinux/pxelinux.cfg/0A
++ * X86PC/UNDI/pxelinux/pxelinux.cfg/0
++ * X86PC/UNDI/pxelinux/pxelinux.cfg/default
++ *
++ * The paths we get from uefi are like:
++ * .BootBootFile: X86PC/UNDI/pxelinux/bootx64.efi
++ * .BootCiAddr: 0.0.0.0
++ * .BootYiAddr: 10.16.52.158
++ * .BootSiAddr: 10.16.52.16
++ */
++
++typedef struct {
++	char *options;
++	EFI_DHCP4_PACKET_OPTION *current_option;
++} dhcp_option_parser;
++
++static void dhcp_option_parser_reset(dhcp_option_parser *parser,
++				EFI_PXE_BASE_CODE_PACKET *packet)
++{
++	char *addr;
++
++	addr = (char *)packet;
++	addr += offsetof(EFI_PXE_BASE_CODE_DHCPV4_PACKET, DhcpOptions);
++	parser->current_option = (void *)addr;
++	parser->options = (void *)addr;
++}
++
++static int dhcp_option_parser_next(dhcp_option_parser *parser,
++				EFI_DHCP4_PACKET_OPTION **option)
++{
++	char *current_option;
++	if (parser->current_option->OpCode == 255) {
++		*option = NULL;
++		return 0;
++	}
++	current_option = (char *)parser->current_option;
++	current_option += 2 + parser->current_option->Length;
++	parser->current_option = (EFI_DHCP4_PACKET_OPTION *)current_option;
++
++	*option = parser->current_option;
++	return 1;
++}
++
++#define DHCPMAGIK "\x63\x82\x53\x63"
++
++static int get_dhcp_client_id(EFI_PXE_BASE_CODE_PACKET *packet, uuid_t *uuid)
++{
++	dhcp_option_parser parser;
++	EFI_DHCP4_PACKET_OPTION *option;
++
++	dhcp_option_parser_reset(&parser, packet);
++
++	if (memcmp((char *)&packet->Dhcpv4.DhcpMagik, DHCPMAGIK, 4))
++		return 0;
++
++	while (dhcp_option_parser_next(&parser, &option)) {
++		int i;
++		char data[option->Length];
++
++		if (option->OpCode != 97)
++			continue;
++
++		if (option->Length != 17)
++			continue;
++
++		memcpy(data, option->Data, option->Length);
++		if (data[0] != 0)
++			continue;
++
++		/* 97[17]: 009cfe245ed0c8bd45a79f54ea5fbd3d97
++		 *                               ^^^^^^^^^^^^ uint8_t[]
++		 *                             ^^ uint8_t
++		 *                           ^^ uint8_t
++		 *                       ^^^^ BE uint16_t
++		 *                   ^^^^ BE uint16_t
++		 *           ^^^^^^^^ BE uint32_t
++		 *         ^^ "type".  0 means UUID.
++		 */
++		memcpy(uuid, data+1, 16);
++		uuid->time_low = htonl(uuid->time_low);
++		uuid->time_mid = htons(uuid->time_mid);
++		uuid->time_hi_ver = htons(uuid->time_hi_ver);
++
++		return 1;
++	}
++	return 0;
++}
++
++#if 0
++static void grub_dump_dhcp_options(EFI_PXE_BASE_CODE_PACKET *packet)
++{
++	dhcp_option_parser parser;
++	EFI_DHCP4_PACKET_OPTION *option;
++	char hex[] = "0123456789abcdef";
++	int i;
++	int j = 0;
++
++	dhcp_option_parser_reset(&parser, packet);
++
++	if (memcmp((char *)&packet->Dhcpv4.DhcpMagik, DHCPMAGIK, 4))
++		return;
++
++	/* 54[4]: a0014301
++	 * 51[4]: 00004506
++	 * 1[4]: ffffff00
++	 * 3[4]: a00143ef
++	 * 6[8]: a001ff20a001ff30
++	 * 15[48]: 96e6374716c6c6e226f637e2275646861647e236f6d60226f637e2275646861647e236f6d602275646861647e236f6d6
++	 * 28[4]: a00143ff
++	 * 40[10]: 275646861647e236f6d6
++	 * 41[8]: a001ff20a001ff30
++	 * 58[4]: 0000a203
++	 * 59[4]: 0000944d
++	 * this is the one we want:
++	 * 97[17]: 009cfe245ed0c8bd45a79f54ea5fbd3d97
++	 *                               ^^^^^^^^^^^^ in order
++	 *                             ^^ 
++	 *                           ^^
++	 *                       ^^^^ out of order
++	 *                   ^^^^ out of order
++	 *           ^^^^^^^^ out of order
++	 *         ^^ "type".  0 means UUID.
++	 * 255[0]: 
++	 */
++	while (dhcp_option_parser_next(&parser, &option)) {
++		char data[option->Length + 1];
++
++		memcpy(data, option->Data, option->Length);
++		data[option->Length] = '\0';
++
++		grub_printf("%d[%d]: ", option->OpCode, option->Length);
++		for (i = 0; i < option->Length; i++) {
++			grub_printf("%c%c", hex[data[i] & 0xf],
++					hex[(data[i] & 0xf0) >> 4]);
++		}
++		printf("\n");
++	}
++
++}
++
++void grub_print_dhcp_info(grub_efi_loaded_image_t *loaded_image)
++{
++	EFI_PXE_BASE_CODE *pxe = NULL;
++	EFI_PXE_BASE_CODE_PACKET *packet;
++
++	grub_printf("got to %s\n", __func__);
++
++	pxe = grub_efi_locate_protocol(&PxeBaseCodeProtocol, NULL);
++	if (pxe == NULL)
++		return;
++	
++	printf("DhcpDiscover options:\n");
++	packet = (EFI_PXE_BASE_CODE_PACKET *)&pxe->Mode->DhcpDiscover.Dhcpv4;
++	grub_dump_dhcp_options(packet);
++
++	printf("DhcpAck options:\n");
++	packet = (EFI_PXE_BASE_CODE_PACKET *)&pxe->Mode->DhcpAck.Dhcpv4;
++	grub_dump_dhcp_options(packet);
++
++	printf("PxeDiscover options:\n");
++	packet = (EFI_PXE_BASE_CODE_PACKET *)&pxe->Mode->PxeDiscover.Dhcpv4;
++	grub_dump_dhcp_options(packet);
++
++	printf("PxeReply options:\n");
++	packet = (EFI_PXE_BASE_CODE_PACKET *)&pxe->Mode->PxeReply.Dhcpv4;
++	grub_dump_dhcp_options(packet);
++
++#if 0
++	printf("pxe->Mode->DhcpAck.Dhcpv4: \n");
++	printf("\t.BootSrvName: %s\n", pxe->Mode->DhcpAck.Dhcpv4.BootpSrvName);
++	printf("\t.BootBootFile: %s\n", pxe->Mode->DhcpAck.Dhcpv4.BootpBootFile);
++	printf("\t.BootCiAddr: %d.%d.%d.%d\n",
++		pxe->Mode->DhcpAck.Dhcpv4.BootpCiAddr[0],
++		pxe->Mode->DhcpAck.Dhcpv4.BootpCiAddr[1],
++		pxe->Mode->DhcpAck.Dhcpv4.BootpCiAddr[2],
++		pxe->Mode->DhcpAck.Dhcpv4.BootpCiAddr[3]);
++	printf("\t.BootYiAddr: %d.%d.%d.%d\n",
++		pxe->Mode->DhcpAck.Dhcpv4.BootpYiAddr[0],
++		pxe->Mode->DhcpAck.Dhcpv4.BootpYiAddr[1],
++		pxe->Mode->DhcpAck.Dhcpv4.BootpYiAddr[2],
++		pxe->Mode->DhcpAck.Dhcpv4.BootpYiAddr[3]);
++	printf("\t.BootSiAddr: %d.%d.%d.%d\n",
++		pxe->Mode->DhcpAck.Dhcpv4.BootpSiAddr[0],
++		pxe->Mode->DhcpAck.Dhcpv4.BootpSiAddr[1],
++		pxe->Mode->DhcpAck.Dhcpv4.BootpSiAddr[2],
++		pxe->Mode->DhcpAck.Dhcpv4.BootpSiAddr[3]);
++	printf("\t.BootGiAddr: %d.%d.%d.%d\n",
++		pxe->Mode->DhcpAck.Dhcpv4.BootpGiAddr[0],
++		pxe->Mode->DhcpAck.Dhcpv4.BootpGiAddr[1],
++		pxe->Mode->DhcpAck.Dhcpv4.BootpGiAddr[2],
++		pxe->Mode->DhcpAck.Dhcpv4.BootpGiAddr[3]);
++	}
++	printf("\n");
++#endif
++
++
++}
++#endif
++
++static void icmp_print_error(EFI_PXE_BASE_CODE *pxe)
++{
++	EFI_PXE_BASE_CODE_ICMP_ERROR *err = &pxe->Mode->IcmpError;
++	int i;
++	//char hex[] = "0123456789abcdef";
++
++	printf("icmp error\n");
++	printf("type: %d code: %d\n", err->Type, err->Code);
++	printf("data: \n");
++	for(i = 0; i < 464; i+=16) {
++		int x;
++		for (x = i; x < i+4; x++)
++			printf("%02x ", err->Data[x]);
++		printf(" ");
++		for (x = i+4; x < i+8; x++)
++			printf("%02x ", err->Data[x]);
++		printf(" ");
++		printf(" ");
++		for (x = i+8; x < i+12; x++)
++			printf("%02x ", err->Data[x]);
++		printf(" ");
++		for (x = i+12; x < i+16; x++)
++			printf("%02x ", err->Data[x]);
++		printf("\n");
++	}
++}
++
++static int grub_efi_pxe_check_for_file(
++	EFI_PXE_BASE_CODE *pxe,
++	EFI_IP_ADDRESS *ServerIp,
++	char *BootpBootFile,
++	char *configname,
++	char **returnpath)
++{
++	size_t bplen = strlen(BootpBootFile);
++	char *Filename = grub_malloc(24 + bplen + 40);
++	char *lastslash = Filename + bplen;
++	grub_efi_uintn_t size;
++	int i;
++	EFI_STATUS rc;
++	char Buffer[8192];
++
++	memcpy(Filename, BootpBootFile, bplen);
++
++	for (i = 0; i < bplen; i++) {
++		if (Filename[i] == '/')
++			lastslash = Filename + i;
++	}
++	if (*lastslash) {
++		*lastslash++ = '/';
++		*lastslash = '\0';
++	}
++
++	sprintf(lastslash, configname);
++
++	printf("tftp://%d.%d.%d.%d/%s\n",
++		ServerIp->v4.Addr[0], ServerIp->v4.Addr[1],
++		ServerIp->v4.Addr[2], ServerIp->v4.Addr[3],
++		Filename);
++
++	rc = tftp_get_file_size(Filename, &size);
++	if (rc == GRUB_EFI_ICMP_ERROR)
++		icmp_print_error(pxe);
++
++	if (rc == GRUB_EFI_SUCCESS) {
++		*returnpath = Filename;
++		return size;
++	}
++	grub_free(Filename);
++	return 0;
++}
++
++static void get_pxe_server(EFI_PXE_BASE_CODE *pxe, EFI_IP_ADDRESS **Address)
++{
++	EFI_IP_ADDRESS *tmp = grub_malloc(sizeof *tmp);
++	if (tmp) {
++		memset(tmp, '\0', sizeof (*tmp));
++		memcpy(&tmp->Addr[0], pxe->Mode->DhcpAck.Dhcpv4.BootpSiAddr, 4);
++		*Address = tmp;
++	}
++}
++
++static char *get_pxe_file_dir(EFI_PXE_BASE_CODE *pxe)
++{
++	char *FileDir = NULL;
++	char *DirEnd = NULL;
++	char *BootpBootFile;
++	size_t bplen;
++
++	BootpBootFile = pxe->Mode->DhcpAck.Dhcpv4.BootpBootFile;
++	bplen = strlen(BootpBootFile);
++	FileDir = grub_malloc(bplen + 1);
++	memcpy(FileDir, BootpBootFile, bplen);
++	FileDir[bplen] = '\0';
++
++	DirEnd = grub_strrchr(FileDir, '/');
++	if (!DirEnd)
++		DirEnd = FileDir;
++
++	*DirEnd = '\0';
++	
++	printf("FileDir: \"%s\"\n", FileDir);
++	return FileDir;
++}
++
++static void set_pxe_info(grub_efi_loaded_image_t *LoadedImage,
++			EFI_PXE_BASE_CODE *pxe)
++{
++	tftp_info.LoadedImage = LoadedImage;
++	tftp_info.Pxe = pxe;
++	get_pxe_server(pxe, &tftp_info.ServerIp);	
++	tftp_info.BasePath = get_pxe_file_dir(pxe);
++}
++
++char *grub_efi_pxe_get_config_path(grub_efi_loaded_image_t *LoadedImage)
++{
++	EFI_PXE_BASE_CODE *pxe = NULL;
++	EFI_IP_ADDRESS ServerIp;
++	char *FileName = NULL;
++	EFI_PXE_BASE_CODE_DHCPV4_PACKET *packet;
++	uuid_t uuid;
++	grub_efi_uintn_t FileSize = 0;
++	grub_efi_status_t rc = GRUB_EFI_SUCCESS;
++	char *ConfigPath = NULL;
++	char hex[] = "0123456789ABCDEF";
++	char hexip[9];
++	int hexiplen;
++
++	pxe = grub_efi_locate_protocol(&PxeBaseCodeProtocol, NULL);
++	if (pxe == NULL)
++		return NULL;
++
++	if (!pxe->Mode->Started)
++		return NULL;
++
++	set_pxe_info(LoadedImage, pxe);
++
++	FileName = grub_malloc(strlen("1902dcf5-7190-d811-bbd6-6ef21c690030"));
++
++	packet = &pxe->Mode->DhcpDiscover.Dhcpv4;
++
++	if (get_dhcp_client_id((EFI_PXE_BASE_CODE_PACKET *)packet, &uuid)) {
++
++		uuid.time_mid = 0x0011;
++		sprintf(FileName,
++			"%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X",
++			uuid.time_low, uuid.time_mid, uuid.time_hi_ver,
++			uuid.clock_seq_hi, uuid.clock_seq_low,
++			uuid.node[0], uuid.node[1], uuid.node[2],
++			uuid.node[3], uuid.node[4], uuid.node[5]);
++
++		rc = tftp_get_file_size(FileName, &FileSize);
++		if (rc == GRUB_EFI_SUCCESS) {
++			char *ReturnFile = grub_malloc(strlen("(nd)/") +
++						strlen(FileName) + 1);
++			sprintf(ReturnFile, "(nd)/%s", FileName);
++			grub_free(FileName);
++			//sprintf(tftp_info.LastPath, FileName);
++			return ReturnFile;
++		}
++	}
++
++	packet = &pxe->Mode->DhcpAck.Dhcpv4;
++
++	if (!memcmp(packet->BootpHwAddr + 6, "\x00\x00\x00\x00\x00"
++					     "\x00\x00\x00\x00\x00", 10) &&
++			memcmp(packet->BootpHwAddr, "\x00\x00\x00\x00\x00\x00",
++				6)) {
++		char mac[21];
++		sprintf(mac, "01-%c%c-%c%c-%c%c-%c%c-%c%c-%c%c",
++			hex[(packet->BootpHwAddr[0] & 0xf0) >> 4],
++			hex[packet->BootpHwAddr[0] & 0xf],
++			hex[(packet->BootpHwAddr[1] & 0xf0) >> 4],
++			hex[packet->BootpHwAddr[1] & 0xf],
++			hex[(packet->BootpHwAddr[2] & 0xf0) >> 4],
++			hex[packet->BootpHwAddr[2] & 0xf],
++			hex[(packet->BootpHwAddr[3] & 0xf0) >> 4],
++			hex[packet->BootpHwAddr[3] & 0xf],
++			hex[(packet->BootpHwAddr[4] & 0xf0) >> 4],
++			hex[packet->BootpHwAddr[4] & 0xf],
++			hex[(packet->BootpHwAddr[5] & 0xf0) >> 4],
++			hex[packet->BootpHwAddr[5] & 0xf]);
++
++		rc = tftp_get_file_size(mac, &FileSize);
++		if (rc == GRUB_EFI_SUCCESS) {
++			char *ReturnFile = grub_malloc(strlen("(nd)/") +
++						strlen(mac) + 1);
++			sprintf(ReturnFile, "(nd)/%s", mac);
++			return ReturnFile;
++		}
++
++	}
++
++	sprintf(hexip, "%c%c%c%c%c%c%c%c",
++		hex[(packet->BootpYiAddr[0] & 0xf0) >> 4],
++		hex[packet->BootpYiAddr[0] & 0xf],
++		hex[(packet->BootpYiAddr[1] & 0xf0) >> 4],
++		hex[packet->BootpYiAddr[1] & 0xf],
++		hex[(packet->BootpYiAddr[2] & 0xf0) >> 4],
++		hex[packet->BootpYiAddr[2] & 0xf],
++		hex[(packet->BootpYiAddr[3] & 0xf0) >> 4],
++		hex[packet->BootpYiAddr[3] & 0xf]);
++
++	for (hexiplen = strlen(hexip); hexiplen > 0; hexiplen--)
++	{
++		hexip[hexiplen] = '\0';
++		rc = tftp_get_file_size(hexip, &FileSize);
++		if (rc == GRUB_EFI_SUCCESS) {
++			char *ReturnFile = grub_malloc(strlen("(nd)/") +
++						strlen(hexip) + 1);
++			sprintf(ReturnFile, "(nd)/%s", hexip);
++			return ReturnFile;
++		}
++	}
++
++	rc = tftp_get_file_size("efidefault", &FileSize);
++	if (rc == GRUB_EFI_SUCCESS) {
++		char *ReturnFile = grub_malloc(strlen("(nd)/efidefault")+1);
++		sprintf(ReturnFile, "(nd)/efidefault");
++		return ReturnFile;
++	}
++
++	return NULL;
++}
+diff --git a/efi/pxe.h b/efi/pxe.h
+new file mode 100644
+index 0000000..0a68007
+--- /dev/null
++++ b/efi/pxe.h
+@@ -0,0 +1,237 @@
++#ifndef PXE_H
++#define PXE_H 1
++
++#include "byteswap.h"
++
++extern char *grub_efi_pxe_get_config_path(grub_efi_loaded_image_t *LoadedImage);
++extern void grub_print_dhcp_info(grub_efi_loaded_image_t *loaded_image);
++extern char *grub_efi_pxe_path_to_path_name(void);
++
++
++#define EFI_PXE_BASE_CODE_PROTOCOL \
++    { 0x03c4e603, 0xac28, 0x11d3, {0x9a, 0x2d, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d} }
++static grub_efi_guid_t PxeBaseCodeProtocol = EFI_PXE_BASE_CODE_PROTOCOL;
++
++struct _EFI_PXE_BASE_CODE;
++
++typedef enum {
++	EFI_PXE_BASE_CODE_TFTP_FIRST,
++	EFI_PXE_BASE_CODE_TFTP_GET_FILE_SIZE,
++	EFI_PXE_BASE_CODE_TFTP_READ_FILE,
++	EFI_PXE_BASE_CODE_TFTP_WRITE_FILE,
++	EFI_PXE_BASE_CODE_TFTP_READ_DIRECTORY,
++	EFI_PXE_BASE_CODE_MTFTP_GET_FILE_SIZE,
++	EFI_PXE_BASE_CODE_MTFTP_READ_FILE,
++	EFI_PXE_BASE_CODE_MTFTP_READ_DIRECTORY,
++	EFI_PXE_BASE_CODE_MTFTP_LAST
++} EFI_PXE_BASE_CODE_TFTP_OPCODE;
++
++typedef struct {
++    grub_efi_uint8_t                   Addr[4];
++} EFI_IPv4_ADDRESS;
++
++typedef struct {
++    grub_efi_uint8_t                   Addr[16];
++} EFI_IPv6_ADDRESS;
++
++typedef struct {
++    grub_efi_uint8_t                   Addr[32];
++} EFI_MAC_ADDRESS;
++
++typedef union {
++    grub_efi_uint32_t      Addr[4];
++    EFI_IPv4_ADDRESS    v4;
++    EFI_IPv6_ADDRESS    v6;
++} EFI_IP_ADDRESS;
++
++typedef grub_efi_uint16_t EFI_PXE_BASE_CODE_UDP_PORT;
++
++typedef struct {
++	EFI_IP_ADDRESS MCastIp;
++	EFI_PXE_BASE_CODE_UDP_PORT CPort;
++	EFI_PXE_BASE_CODE_UDP_PORT SPort;
++	grub_efi_uint16_t ListenTimeout;
++	grub_efi_uint16_t TransmitTimeout;
++} EFI_PXE_BASE_CODE_MTFTP_INFO;
++
++typedef EFI_STATUS (*EFI_PXE_BASE_CODE_MTFTP)(
++	struct _EFI_PXE_BASE_CODE *This,
++	EFI_PXE_BASE_CODE_TFTP_OPCODE Operation,
++	void *BufferPtr,
++	grub_efi_boolean_t Overwrite,
++	grub_efi_uint64_t *BufferSize,
++	grub_efi_uintn_t *BlockSize,
++	EFI_IP_ADDRESS *ServerIp,
++	grub_efi_uint8_t *Filename,
++	EFI_PXE_BASE_CODE_MTFTP_INFO *Info,
++	grub_efi_boolean_t DontUseBuffer);
++
++typedef struct {
++    grub_efi_uint8_t                           BootpOpcode;
++    grub_efi_uint8_t                           BootpHwType;
++    grub_efi_uint8_t                           BootpHwAddrLen;
++    grub_efi_uint8_t                           BootpGateHops;
++    grub_efi_uint32_t                          BootpIdent;
++    grub_efi_uint16_t                          BootpSeconds;
++    grub_efi_uint16_t                          BootpFlags;
++    grub_efi_uint8_t                           BootpCiAddr[4];
++    grub_efi_uint8_t                           BootpYiAddr[4];
++    grub_efi_uint8_t                           BootpSiAddr[4];
++    grub_efi_uint8_t                           BootpGiAddr[4];
++    grub_efi_uint8_t                           BootpHwAddr[16];
++    grub_efi_uint8_t                           BootpSrvName[64];
++    grub_efi_uint8_t                           BootpBootFile[128];
++    grub_efi_uint32_t                          DhcpMagik;
++    grub_efi_uint8_t                           DhcpOptions[56];
++} EFI_PXE_BASE_CODE_DHCPV4_PACKET;
++
++// TBD in EFI v1.1
++//typedef struct {
++//    grub_efi_uint8_t                           reserved;
++//} EFI_PXE_BASE_CODE_DHCPV6_PACKET;
++
++typedef union {
++    grub_efi_uint8_t                               Raw[1472];
++    EFI_PXE_BASE_CODE_DHCPV4_PACKET     Dhcpv4;
++//    EFI_PXE_BASE_CODE_DHCPV6_PACKET     Dhcpv6;
++} EFI_PXE_BASE_CODE_PACKET;
++
++typedef struct {
++    grub_efi_uint8_t                   Type;
++    grub_efi_uint8_t                   Code;
++    grub_efi_uint16_t                  Checksum;
++    union {
++        grub_efi_uint32_t              reserved;
++        grub_efi_uint32_t              Mtu;
++        grub_efi_uint32_t              Pointer;
++        struct {
++            grub_efi_uint16_t          Identifier;
++            grub_efi_uint16_t          Sequence;
++        } Echo;
++    } u;
++    grub_efi_uint8_t                   Data[494];
++} EFI_PXE_BASE_CODE_ICMP_ERROR;
++
++typedef struct {
++    grub_efi_uint8_t                   ErrorCode;
++    grub_efi_char8_t                   ErrorString[127];
++} EFI_PXE_BASE_CODE_TFTP_ERROR;
++
++
++#define EFI_PXE_BASE_CODE_MAX_IPCNT             8
++typedef struct {
++    grub_efi_uint8_t                       Filters;
++    grub_efi_uint8_t                       IpCnt;
++    grub_efi_uint16_t                      reserved;
++    EFI_IP_ADDRESS              IpList[EFI_PXE_BASE_CODE_MAX_IPCNT];
++} EFI_PXE_BASE_CODE_IP_FILTER;
++
++#define EFI_PXE_BASE_CODE_IP_FILTER_STATION_IP             0x0001
++#define EFI_PXE_BASE_CODE_IP_FILTER_BROADCAST              0x0002
++#define EFI_PXE_BASE_CODE_IP_FILTER_PROMISCUOUS            0x0004
++#define EFI_PXE_BASE_CODE_IP_FILTER_PROMISCUOUS_MULTICAST  0x0008
++
++typedef struct {
++    EFI_IP_ADDRESS       IpAddr;
++    EFI_MAC_ADDRESS      MacAddr;
++} EFI_PXE_BASE_CODE_ARP_ENTRY;
++
++typedef struct {
++    EFI_IP_ADDRESS       IpAddr;
++    EFI_IP_ADDRESS       SubnetMask;
++    EFI_IP_ADDRESS       GwAddr;
++} EFI_PXE_BASE_CODE_ROUTE_ENTRY;
++
++#define EFI_PXE_BASE_CODE_MAX_ARP_ENTRIES       8
++#define EFI_PXE_BASE_CODE_MAX_ROUTE_ENTRIES     8
++
++typedef struct {
++    grub_efi_boolean_t                         Started;
++    grub_efi_boolean_t                         Ipv6Available;
++    grub_efi_boolean_t                         Ipv6Supported;
++    grub_efi_boolean_t                         UsingIpv6;
++    grub_efi_boolean_t                         BisSupported;
++    grub_efi_boolean_t                         BisDetected;
++    grub_efi_boolean_t                         AutoArp;
++    grub_efi_boolean_t                         SendGUID;
++    grub_efi_boolean_t                         DhcpDiscoverValid;
++    grub_efi_boolean_t                         DhcpAckReceived;
++    grub_efi_boolean_t                         ProxyOfferReceived;
++    grub_efi_boolean_t                         PxeDiscoverValid;
++    grub_efi_boolean_t                         PxeReplyReceived;
++    grub_efi_boolean_t                         PxeBisReplyReceived;
++    grub_efi_boolean_t                         IcmpErrorReceived;
++    grub_efi_boolean_t                         TftpErrorReceived;
++    grub_efi_boolean_t                         MakeCallbacks;
++    grub_efi_uint8_t                           TTL;
++    grub_efi_uint8_t                           ToS;
++    EFI_IP_ADDRESS                  StationIp;
++    EFI_IP_ADDRESS                  SubnetMask;
++    EFI_PXE_BASE_CODE_PACKET        DhcpDiscover;
++    EFI_PXE_BASE_CODE_PACKET        DhcpAck;
++    EFI_PXE_BASE_CODE_PACKET        ProxyOffer;
++    EFI_PXE_BASE_CODE_PACKET        PxeDiscover;
++    EFI_PXE_BASE_CODE_PACKET        PxeReply;
++    EFI_PXE_BASE_CODE_PACKET        PxeBisReply;
++    EFI_PXE_BASE_CODE_IP_FILTER     IpFilter;
++    grub_efi_uint32_t                          ArpCacheEntries;
++    EFI_PXE_BASE_CODE_ARP_ENTRY     ArpCache[EFI_PXE_BASE_CODE_MAX_ARP_ENTRIES];
++    grub_efi_uint32_t                          RouteTableEntries;
++    EFI_PXE_BASE_CODE_ROUTE_ENTRY   RouteTable[EFI_PXE_BASE_CODE_MAX_ROUTE_ENTRIES];
++    EFI_PXE_BASE_CODE_ICMP_ERROR    IcmpError;
++    EFI_PXE_BASE_CODE_TFTP_ERROR    TftpError;
++} EFI_PXE_BASE_CODE_MODE;
++
++typedef EFI_STATUS (*EFI_PXE_BASE_CODE_START)();
++typedef EFI_STATUS (*EFI_PXE_BASE_CODE_STOP)();
++typedef EFI_STATUS (*EFI_PXE_BASE_CODE_DHCP)();
++typedef EFI_STATUS (*EFI_PXE_BASE_CODE_DISCOVER)();
++typedef EFI_STATUS (*EFI_PXE_BASE_CODE_UDP_WRITE)();
++typedef EFI_STATUS (*EFI_PXE_BASE_CODE_UDP_READ)();
++typedef EFI_STATUS (*EFI_PXE_BASE_CODE_SET_IP_FILTER)();
++typedef EFI_STATUS (*EFI_PXE_BASE_CODE_ARP)();
++typedef EFI_STATUS (*EFI_PXE_BASE_CODE_SET_PARAMETERS)();
++typedef EFI_STATUS (*EFI_PXE_BASE_CODE_SET_STATION_IP)();
++typedef EFI_STATUS (*EFI_PXE_BASE_CODE_SET_PACKETS)();
++
++typedef struct _EFI_PXE_BASE_CODE{
++	grub_efi_uint64_t Revision;
++	EFI_PXE_BASE_CODE_START             Start;
++	EFI_PXE_BASE_CODE_STOP              Stop;
++	EFI_PXE_BASE_CODE_DHCP              Dhcp;
++	EFI_PXE_BASE_CODE_DISCOVER          Discover;
++	EFI_PXE_BASE_CODE_MTFTP             Mtftp;
++	EFI_PXE_BASE_CODE_UDP_WRITE         UdpWrite;
++	EFI_PXE_BASE_CODE_UDP_READ          UdpRead;
++	EFI_PXE_BASE_CODE_SET_IP_FILTER     SetIpFilter;
++	EFI_PXE_BASE_CODE_ARP               Arp;
++	EFI_PXE_BASE_CODE_SET_PARAMETERS    SetParameters;
++	EFI_PXE_BASE_CODE_SET_STATION_IP    SetStationIp;
++	EFI_PXE_BASE_CODE_SET_PACKETS       SetPackets;
++	EFI_PXE_BASE_CODE_MODE              *Mode;
++} EFI_PXE_BASE_CODE;
++
++typedef struct {
++	grub_efi_uint32_t time_low;
++	grub_efi_uint16_t time_mid;
++	grub_efi_uint16_t time_hi_ver;
++	grub_efi_uint8_t clock_seq_hi;
++	grub_efi_uint8_t clock_seq_low;
++	grub_efi_uint8_t node[6];
++} uuid_t;
++
++struct tftp_info {
++	grub_efi_loaded_image_t *LoadedImage;
++	EFI_PXE_BASE_CODE *Pxe;
++	EFI_IP_ADDRESS *ServerIp;
++	char *BasePath;
++	char *LastPath;
++	char *Buffer;
++};
++
++extern struct tftp_info tftp_info;
++extern grub_efi_status_t tftp_get_file_size(
++	char *Filename,
++	grub_efi_uintn_t *Size);
++
++#endif /* PXE_H */
+diff --git a/grub/Makefile.am b/grub/Makefile.am
+index 7eb2eaa..d4353f7 100644
+--- a/grub/Makefile.am
++++ b/grub/Makefile.am
+@@ -15,5 +15,5 @@ AM_CPPFLAGS = -DGRUB_UTIL=1 -DFSYS_EXT2FS=1 -DFSYS_FAT=1 -DFSYS_FFS=1 \
+ 
+ AM_CFLAGS = $(GRUB_CFLAGS)
+ 
+-grub_SOURCES = main.c asmstub.c
++grub_SOURCES = main.c asmstub.c efitftp.c
+ grub_LDADD = ../stage2/libgrub.a  ../lib/libcommon.a $(GRUB_LIBS)
+diff --git a/grub/efitftp.c b/grub/efitftp.c
+new file mode 100644
+index 0000000..5355dec
+--- /dev/null
++++ b/grub/efitftp.c
+@@ -0,0 +1,34 @@
++#include <shared.h>
++#include <filesys.h>
++
++int efi_tftp_mount (void);
++int efi_tftp_read (char *buf, int len);
++int efi_tftp_dir (char *dirname);
++void efi_tftp_close (void);
++
++int
++efi_tftp_mount (void)
++{
++	grub_printf("non-efi efi_tftp_mount()\n");
++	return 0;
++}
++
++int
++efi_tftp_read (char *addr, int size)
++{
++	grub_printf ("non-efi efi_tftp_read (0x%x, %d)\n", (long) addr, size);
++	return 0;
++}
++
++int
++efi_tftp_dir (char *dirname)
++{
++	grub_printf ("non-efi efi_ftp_dir (%s)\n", dirname);
++	return 0;
++}
++
++void
++efi_tftp_close (void)
++{
++	grub_printf ("non-efi efi_tftp_close ()\n");
++}
+diff --git a/stage2/Makefile.am b/stage2/Makefile.am
+index e128bc2..06bc8e5 100644
+--- a/stage2/Makefile.am
++++ b/stage2/Makefile.am
+@@ -23,7 +23,7 @@ libgrub_a_SOURCES = boot.c builtins.c char_io.c cmdline.c common.c \
+ 	disk_io.c fsys_ext2fs.c fsys_fat.c fsys_ffs.c fsys_iso9660.c \
+ 	fsys_jfs.c fsys_minix.c fsys_reiserfs.c fsys_ufs2.c \
+ 	fsys_vstafs.c fsys_xfs.c gunzip.c md5.c serial.c stage2.c \
+-	terminfo.c tparm.c graphics.c
++	terminfo.c tparm.c graphics.c efistubs.c
+ libgrub_a_CFLAGS = $(GRUB_CFLAGS) -I$(top_srcdir)/lib \
+ 	-DGRUB_UTIL=1 -DFSYS_EXT2FS=1 -DFSYS_FAT=1 -DFSYS_FFS=1 \
+ 	-DFSYS_ISO9660=1 -DFSYS_JFS=1 -DFSYS_MINIX=1 -DFSYS_REISERFS=1 \
+@@ -100,7 +100,7 @@ libstage2_a_SOURCES = boot.c builtins.c char_io.c cmdline.c common.c \
+ 	disk_io.c fsys_ext2fs.c fsys_fat.c fsys_ffs.c fsys_iso9660.c \
+ 	fsys_jfs.c fsys_minix.c fsys_reiserfs.c fsys_ufs2.c \
+ 	fsys_vstafs.c fsys_xfs.c gunzip.c md5.c serial.c stage2.c \
+-	terminfo.c tparm.c
++	terminfo.c tparm.c efistubs.c
+ libstage2_a_CFLAGS = $(STAGE2_COMPILE) $(FSYS_CFLAGS)
+ 
+ if !PLATFORM_EFI
+diff --git a/stage2/disk_io.c b/stage2/disk_io.c
+index 622bdbb..ef34ae4 100644
+--- a/stage2/disk_io.c
++++ b/stage2/disk_io.c
+@@ -28,6 +28,10 @@
+ # include <etherboot.h>
+ #endif
+ 
++#ifdef PLATFORM_EFI
++#include "efistubs.h"
++#endif
++
+ #ifdef GRUB_UTIL
+ # include <device.h>
+ #endif
+@@ -49,6 +53,9 @@ int fsmax;
+ struct fsys_entry fsys_table[NUM_FSYS + 1] =
+ {
+   /* TFTP should come first because others don't handle net device.  */
++# ifdef PLATFORM_EFI
++  {"efitftp", efi_tftp_mount, efi_tftp_read, efi_tftp_dir, efi_tftp_close, 0},
++# endif
+ # ifdef FSYS_TFTP
+   {"tftp", tftp_mount, tftp_read, tftp_dir, tftp_close, 0},
+ # endif
+@@ -1067,7 +1074,7 @@ set_device (char *device)
+       if (*device != ',' && *device != ')')
+ 	{
+ 	  char ch = *device;
+-#ifdef SUPPORT_NETBOOT
++#if defined(SUPPORT_NETBOOT) || defined(PLATFORM_EFI)
+ 	  if (*device == 'f' || *device == 'h'
+ 	      || (*device == 'n' && network_ready)
+ 	      || (*device == 'c' && cdrom_drive != GRUB_INVALID_DRIVE))
+@@ -1091,14 +1098,14 @@ set_device (char *device)
+ 
+ 	  if ((*device == 'f'
+ 	       || *device == 'h'
+-#ifdef SUPPORT_NETBOOT
++#if defined(SUPPORT_NETBOOT) || defined(PLATFORM_EFI)
+ 	       || (*device == 'n' && network_ready)
+ #endif
+ 	       || (*device == 'c' && cdrom_drive != GRUB_INVALID_DRIVE))
+ 	      && (device += 2, (*(device - 1) != 'd')))
+ 	    errnum = ERR_NUMBER_PARSING;
+ 	  
+-#ifdef SUPPORT_NETBOOT
++#if defined(SUPPORT_NETBOOT) || defined(PLATFORM_EFI)
+ 	  if (ch == 'n' && network_ready)
+ 	    current_drive = NETWORK_DRIVE;
+ 	  else
+@@ -1465,7 +1472,7 @@ print_completions (int is_filename, int is_completion)
+ 
+ 	      if (!ptr
+ 		  || *(ptr-1) != 'd'
+-#ifdef SUPPORT_NETBOOT
++#if defined(SUPPORT_NETBOOT) || defined(PLATFORM_EFI)
+ 		  || *(ptr-2) != 'n'
+ #endif /* SUPPORT_NETBOOT */
+ 		  || *(ptr-2) != 'c')
+@@ -1496,7 +1503,7 @@ print_completions (int is_filename, int is_completion)
+ 		      || (*(ptr-1) == 'd' && *(ptr-2) == 'c')))
+ 		print_a_completion ("cd");
+ 
+-# ifdef SUPPORT_NETBOOT
++# if defined(SUPPORT_NETBOOT) || defined(PLATFORM_EFI)
+ 	      if (network_ready
+ 		  && (disk_choice || NETWORK_DRIVE == current_drive)
+ 		  && (!ptr
+diff --git a/stage2/efistubs.c b/stage2/efistubs.c
+new file mode 100644
+index 0000000..29b086a
+--- /dev/null
++++ b/stage2/efistubs.c
+@@ -0,0 +1,7 @@
++
++#include "shared.h"
++#include "efistubs.h"
++
++#if defined(PLATFORM_EFI)
++int network_ready = 0;
++#endif /* defined(PLATFORM_EFI) */
+diff --git a/stage2/efistubs.h b/stage2/efistubs.h
+new file mode 100644
+index 0000000..97e407d
+--- /dev/null
++++ b/stage2/efistubs.h
+@@ -0,0 +1,8 @@
++#ifndef EFISTUBS_H
++#define EFISTUBS_H 1
++
++#if defined(PLATFORM_EFI)
++extern int network_ready;
++#endif /* defined(PLATFORM_EFI) */
++
++#endif /* EFISTUBS_H */
+diff --git a/stage2/filesys.h b/stage2/filesys.h
+index 4ea0728..4295e45 100644
+--- a/stage2/filesys.h
++++ b/stage2/filesys.h
+@@ -115,6 +115,17 @@ void tftp_close (void);
+ #define FSYS_TFTP_NUM 0
+ #endif
+ 
++#ifdef PLATFORM_EFI
++#define FSYS_EFI_TFTP_NUM 1
++int efi_tftp_mount (void);
++int efi_tftp_read (char *buf, int len);
++int efi_tftp_dir (char *dirname);
++void efi_tftp_close (void);
++#else
++#define FSYS_EFI_TFTP_NUM 0
++#endif
++
++
+ #ifdef FSYS_ISO9660
+ #define FSYS_ISO9660_NUM 1
+ int iso9660_mount (void);
+@@ -128,7 +139,7 @@ int iso9660_dir (char *dirname);
+ #define NUM_FSYS	\
+   (FSYS_FFS_NUM + FSYS_FAT_NUM + FSYS_EXT2FS_NUM + FSYS_MINIX_NUM	\
+    + FSYS_REISERFS_NUM + FSYS_VSTAFS_NUM + FSYS_JFS_NUM + FSYS_XFS_NUM	\
+-   + FSYS_TFTP_NUM + FSYS_ISO9660_NUM + FSYS_UFS2_NUM)
++   + FSYS_TFTP_NUM + FSYS_EFI_TFTP_NUM + FSYS_ISO9660_NUM + FSYS_UFS2_NUM)
+ #endif
+ 
+ /* defines for the block filesystem info area */
+-- 
+1.6.2
+

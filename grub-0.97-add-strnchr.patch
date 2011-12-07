@@ -1,0 +1,234 @@
+From 20b9bd8c6047a703aadbb3fac7ad25acbe1e6b8a Mon Sep 17 00:00:00 2001
+From: Peter Jones <pjones@redhat.com>
+Date: Thu, 29 Jul 2010 17:02:53 -0400
+Subject: [PATCH 1/2] Add grub_strnchr(const char *s, int c) and some other string funcs.
+
+Add grub_strnchr(), which returns the first character of "s" that is not
+"c".
+---
+ efi/efimisc.c    |   43 +++++++++------------------
+ efi/grub/misc.h  |    5 ++-
+ stage2/char_io.c |   86 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ stage2/shared.h  |   11 +++++++
+ 4 files changed, 114 insertions(+), 31 deletions(-)
+
+diff --git a/efi/efimisc.c b/efi/efimisc.c
+index 995be97..a319fdd 100644
+--- a/efi/efimisc.c
++++ b/efi/efimisc.c
+@@ -256,6 +256,19 @@ stop_floppy (void)
+   /* NOTUSED */
+ }
+ 
++char *
++grub_strndup (const char *s, int n)
++{
++  int l = grub_strnlen(s, n);
++  char *new = grub_malloc(l + 1);
++
++  if (new == NULL)
++    return NULL;
++
++  new[l] = '\0';
++  return grub_strncpy(new, s, l);
++}
++
+ int
+ safe_parse_maxulong (char **str_ptr, unsigned long *myulong_ptr)
+ {
+@@ -310,34 +323,6 @@ safe_parse_maxulong (char **str_ptr, unsigned long *myulong_ptr)
+   return 1;
+ }
+ 
+-char *
+-grub_strchr (const char *s, int c)
+-{
+-  while (*s)
+-    {
+-      if (*s == c)
+-	return (char *) s;
+-      s++;
+-    }
+-
+-  return 0;
+-}
+-
+-char *
+-grub_strrchr (const char *s, int c)
+-{
+-  char *p = 0;
+-
+-  while (*s)
+-    {
+-      if (*s == c)
+-	p = (char *) s;
+-      s++;
+-    }
+-
+-  return p;
+-}
+-
+ int
+ currticks (void)
+ {
+@@ -506,7 +491,7 @@ grub_set_config_file (char *path_name)
+ 	       DEFAULT_SAVED_DEFAULT_FILE_NAME);
+ }
+ 
+-static grub_efi_guid_t simple_file_system_guid = GRUB_EFI_SIMPLE_FILE_SYSTEM_GUID;
++grub_efi_guid_t simple_file_system_guid = GRUB_EFI_SIMPLE_FILE_SYSTEM_GUID;
+ 
+ static grub_efi_file_t *
+ simple_open_file(grub_efi_handle_t dev_handle,
+diff --git a/efi/grub/misc.h b/efi/grub/misc.h
+index 0d9b09b..5ec54d5 100644
+--- a/efi/grub/misc.h
++++ b/efi/grub/misc.h
+@@ -28,8 +28,6 @@
+ 	grub_real_dprintf(__FILE__, __LINE__, condition, fmt, ## args)
+ 
+ char *grub_stpcpy (char *dest, const char *src);
+-char *grub_strchr (const char *s, int c);
+-char *grub_strrchr (const char *s, int c);
+ void grub_real_dprintf (const char *file,
+ 			const int line,
+ 			const char *condition,
+@@ -44,6 +42,9 @@ grub_uint8_t *grub_utf16_to_utf8 (grub_uint8_t * dest,
+ void *grub_malloc (grub_size_t size);
+ void grub_free (void *ptr);
+ 
++char *grub_strndup (const char *s, int n);
++#define strndup grub_strndup
++
+ int safe_parse_maxulong (char **str_ptr, unsigned long *myulong_ptr);
+ 
+ #define E820_RAM        1
+diff --git a/stage2/char_io.c b/stage2/char_io.c
+index 9104eed..002b7c9 100644
+--- a/stage2/char_io.c
++++ b/stage2/char_io.c
+@@ -1462,6 +1462,92 @@ grub_strtok_r(char *s, const char *delim, char **ptrptr) {
+   return tmp;
+ }
+ 
++char *
++grub_strchr (const char *s, int c)
++{
++  while (*s)
++    {
++      if (*s == c)
++	return (char *) s;
++      s++;
++    }
++
++  return 0;
++}
++
++char *
++grub_strnchr (const char *s, int c)
++{
++  while (*s)
++    {
++      if (*s != c)
++	return (char *) s;
++      s++;
++    }
++
++  return 0;
++}
++
++char *
++grub_strrchr (const char *s, int c)
++{
++  char *p = 0;
++
++  while (*s)
++    {
++      if (*s == c)
++	p = (char *) s;
++      s++;
++    }
++
++  return p;
++}
++
++int
++grub_strnlen (const char *s, int n)
++{
++  int i;
++
++  if (n == 0)
++    return 0;
++
++  for (i = 0; s[i] != '\0' && i < n; i++)
++    ;
++  return i;
++}
++
++char *
++grub_strncpy(char *new, const char *s, int n)
++{
++  int i;
++
++  for (i = 0; s[i] != '\0' && i < n; i++)
++    new[i] = s[i];
++  return new;
++}
++
++int
++grub_strncasecmp(const char *s0, const char *s1, int n)
++{
++  int c0, c1;
++
++  if (s0 == s1 || n == 0)
++    return 0;
++
++  do {
++    c0 = *s0 & ~0x20;
++    c1 = *s1 & ~0x20;
++
++    if (--n == 0 || c0 == '\0')
++      break;
++
++    *s0++;
++    *s1++;
++  } while (c0 == c1);
++
++  return (c0 > c1 ? 1 : c0 < c1 ? -1 : 0);
++}
++
+ #endif /* ! STAGE1_5 */
+ 
+ #ifdef GRUB_UTIL
+diff --git a/stage2/shared.h b/stage2/shared.h
+index 1c93314..6882027 100644
+--- a/stage2/shared.h
++++ b/stage2/shared.h
+@@ -377,6 +377,11 @@ extern void *grub_scratch_mem;
+ #define strspn grub_strspn
+ #define strcspn grub_strcspn
+ #define strtok_r grub_strtok_r
++#define strchr grub_strchr
++#define strrchr grub_strrchr
++#define strnchr grub_strnchr
++#define strncpy grub_strncpy
++#define strncasecmp grub_strncasecmp
+ #endif /* WITHOUT_LIBC_STUBS */
+ 
+ #ifndef ASM_FILE
+@@ -914,6 +919,12 @@ char *grub_strcpy (char *dest, const char *src);
+ int grub_strspn(const char *s, const char *accept);
+ int grub_strcspn(const char *s, const char *reject);
+ char *grub_strtok_r(char *s, const char *delim, char **ptrptr);
++char *grub_strchr (const char *s, int c);
++char *grub_strrchr (const char *s, int c);
++char *grub_strnchr (const char *s, int c);
++int grub_strnlen (const char *s, int n);
++char *grub_strncpy (char *new, const char *s, int n);
++int grub_strncasecmp(const char *s0, const char *s1, int n);
+ 
+ #ifndef GRUB_UTIL
+ typedef unsigned long grub_jmp_buf[8];
+-- 
+1.7.2
+

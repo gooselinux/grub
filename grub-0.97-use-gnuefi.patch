@@ -1,0 +1,94 @@
+commit 94c31b2f558bb45ee80f374ceae487e6d737fcb1
+Author: Peter Jones <pjones@redhat.com>
+Date:   Tue May 6 12:55:40 2008 -0400
+
+    Fix up makesfiles/configure to use gnu-efi versions of setjmp and _relocate.
+    Include setjmp/longjmp wrapper until I get a chance to clean up the headers.
+
+diff -urpN grub-0.97/configure.in.gnuefi grub-0.97/configure.in
+--- grub-0.97/configure.in.gnuefi	2009-08-20 09:52:01.000000000 -0400
++++ grub-0.97/configure.in	2009-08-20 09:52:45.000000000 -0400
+@@ -63,7 +63,7 @@ if test "x$platform" = xefi; then
+   AC_SUBST(EFI_ARCH)
+ fi
+ 
+-gnuefi_path=/usr/lib/gnuefi
++gnuefi_path=${libdir}/gnuefi
+ gnuefi_crt0=${gnuefi_path}/crt0-efi-${EFI_ARCH}.o
+ if ! test -f $gnuefi_crt0 ; then
+   gnuefi_crt0=crt0-efi.o
+@@ -76,6 +76,8 @@ if ! test -f $gnuefi_lds ; then
+ fi
+ GNUEFI_LDS=${gnuefi_lds}
+ AC_SUBST(GNUEFI_LDS)
++LIBGNUEFI=${libdir}/libgnuefi.a
++AC_SUBST(LIBGNUEFI)
+ 
+ AC_SUBST(platform)
+ AM_CONDITIONAL(PLATFORM_EFI, test "x$platform" = xefi)
+diff -urpN grub-0.97/efi/eficore.c.gnuefi grub-0.97/efi/eficore.c
+--- grub-0.97/efi/eficore.c.gnuefi	2009-08-20 09:54:04.000000000 -0400
++++ grub-0.97/efi/eficore.c	2009-08-20 09:54:57.000000000 -0400
+@@ -50,6 +50,19 @@ grub_efi_locate_handle_buffer (grub_efi_
+ 		search_type, protocol, search_key, no_handles, buffer);
+ }
+ 
++/* temporary, until we're using gnu-efi's include files --pjones */
++extern int setjmp(grub_jmp_buf env);
++int grub_setjmp(grub_jmp_buf env)
++{
++	return setjmp(env);
++}
++
++extern void longjmp(grub_jmp_buf env, int val);
++void grub_longjmp(grub_jmp_buf env, int val)
++{
++	longjmp(env, val);
++}
++
+ void *
+ grub_efi_locate_protocol (grub_efi_guid_t *protocol, void *registration)
+ {
+diff -urpN grub-0.97/efi/Makefile.am.gnuefi grub-0.97/efi/Makefile.am
+--- grub-0.97/efi/Makefile.am.gnuefi	2009-08-20 09:51:41.000000000 -0400
++++ grub-0.97/efi/Makefile.am	2009-08-20 09:53:57.000000000 -0400
+@@ -32,8 +32,9 @@ GRUBEFI_FORMAT = efi-app-$(EFI_ARCH)
+ GRUBSO_LD_SCRIPT = @GNUEFI_LDS@
+ GRUBSO_LD_FLAGS = -T $(GRUBSO_LD_SCRIPT) -nostdlib -shared -Bsymbolic
+ 
+-GRUBSO_OBJS = reloc.o efimain.o @GNUEFI_CRT0@
+-GRUBSO_LIBS = $(top_srcdir)/stage2/libstage2.a libgrubefi.a @LIBGCC@
++GRUBSO_OBJS = efimain.o
++GRUBSO_LIBS = @GNUEFI_CRT0@ $(top_srcdir)/stage2/libstage2.a \
++		libgrubefi.a @LIBGCC@
+ 
+ if NETBOOT_SUPPORT
+ GRUBSO_LIBS += $(top_srcdir)/netboot/libdrivers.a
+@@ -45,7 +46,7 @@ grub.efi: grub.so
+ 	$(OBJCOPY) -j .text -j .sdata -j .data -j .dynamic -j .dynsym -j .rel \
+                    -j .rela -j .reloc --target=$(GRUBEFI_FORMAT) $^ $@
+ 
+-grub.so: $(GRUBSO_OBJS) $(GRUBSO_LIBS)
++grub.so: $(GRUBSO_OBJS) $(GRUBSO_LIBS) @LIBGNUEFI@
+ 	$(LD) -o $@ $(GRUBSO_LD_FLAGS) $^
+ 	echo '-------------- unresolved symbols ---------------------'
+ 	! nm $@ | grep -iw u
+@@ -57,9 +58,6 @@ crt0-efi.o: $(EFI_ARCH)/crt0-efi.S
+ efimain.o: efimain.c
+ 	$(CC) -o $@ -c $(libgrubefi_a_CFLAGS) $^
+ 
+-reloc.o: $(EFI_ARCH)/reloc.c
+-	$(CC) -o $@ -c $(RELOC_FLAGS) $^
+-
+ clean-local:
+ 	-rm -rf grub.so grub.efi
+ 
+@@ -70,7 +68,7 @@ RELOC_FLAGS = $(STAGE2_CFLAGS) -I$(top_s
+ 
+ noinst_LIBRARIES = libgrubefi.a
+ libgrubefi_a_SOURCES = $(EFI_ARCH)/callwrap.c eficore.c efimm.c efimisc.c \
+-	$(EFI_ARCH)/setjmp.S eficon.c efidisk.c graphics.c efigraph.c efiuga.c \
++	eficon.c efidisk.c graphics.c efigraph.c efiuga.c \
+ 	font_8x16.c efiserial.c $(EFI_ARCH)/loader/linux.c efichainloader.c \
+ 	xpm.c pxe.c efitftp.c
+ libgrubefi_a_CFLAGS = $(RELOC_FLAGS) -nostdinc

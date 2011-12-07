@@ -1,0 +1,91 @@
+diff -ur -x Makefile.am -x Makefile.in grub-0.97.clean/stage2/boot.c grub-0.97.cleanhack/stage2/boot.c
+--- grub-0.97.clean/stage2/boot.c	2009-09-03 14:06:18.000000000 -0400
++++ grub-0.97.cleanhack/stage2/boot.c	2009-09-03 14:17:57.000000000 -0400
+@@ -300,6 +300,9 @@
+ 			       (big_linux ? "bzImage" : "zImage"),
+ 			       data_len, text_len);
+ 
++	  if (silent_grub)
++	    lh->vid_mode = 0x0f04;
++
+ 	  /* Video mode selection support. What a mess!  */
+ 	  /* NOTE: Even the word "mess" is not still enough to
+ 	     represent how wrong and bad the Linux video support is,
+diff -ur -x Makefile.am -x Makefile.in grub-0.97.clean/stage2/builtins.c grub-0.97.cleanhack/stage2/builtins.c
+--- grub-0.97.clean/stage2/builtins.c	2009-09-03 14:06:18.000000000 -0400
++++ grub-0.97.cleanhack/stage2/builtins.c	2009-09-03 15:42:38.000000000 -0400
+@@ -291,6 +291,9 @@
+       current_term = term_table; /* assumption: console is first */
+     }
+ 
++  if (silent_grub)
++    setcursor(0);
++
+ #ifdef SUPPORT_NETBOOT
+   /* Shut down the networking.  */
+   cleanup_net ();
+@@ -4407,6 +4410,22 @@
+ #endif /* ! PLATFORM_EFI */
+ 
+ 
++static int
++silent_func (char *arg, int flags)
++{
++  silent_grub = 1;
++  return 0;
++}
++
++static struct builtin builtin_silent =
++{
++  "silent",
++  silent_func,
++  BUILTIN_MENU | BUILTIN_CMDLINE | BUILTIN_HELP_LIST,
++  "grub will attempt to avoid printing anything to the screen"
++};
++
++
+ #if defined(SUPPORT_SERIAL) || defined(SUPPORT_HERCULES) || defined(SUPPORT_GRAPHICS)
+ /* terminal */
+ static int
+@@ -5224,6 +5243,7 @@
+   &builtin_setkey,
+   &builtin_setup,
+ #endif
++  &builtin_silent,
+ #ifdef SUPPORT_GRAPHICS
+   &builtin_splashimage,
+ #endif /* SUPPORT_GRAPHICS */
+diff -ur -x Makefile.am -x Makefile.in grub-0.97.clean/stage2/shared.h grub-0.97.cleanhack/stage2/shared.h
+--- grub-0.97.clean/stage2/shared.h	2009-09-03 14:06:18.000000000 -0400
++++ grub-0.97.cleanhack/stage2/shared.h	2009-09-03 14:15:12.000000000 -0400
+@@ -684,6 +684,8 @@
+ extern int filepos;
+ extern int filemax;
+ 
++extern int silent_grub;
++
+ /*
+  *  Common BIOS/boot data.
+  */
+diff -ur -x Makefile.am -x Makefile.in grub-0.97.clean/stage2/stage2.c grub-0.97.cleanhack/stage2/stage2.c
+--- grub-0.97.clean/stage2/stage2.c	2009-09-03 14:06:18.000000000 -0400
++++ grub-0.97.cleanhack/stage2/stage2.c	2009-09-03 15:42:55.000000000 -0400
+@@ -22,6 +22,8 @@
+ 
+ grub_jmp_buf restart_env;
+ 
++int silent_grub = 0;
++
+ #if defined(PRESET_MENU_STRING) || defined(SUPPORT_DISKLESS)
+ 
+ # if defined(PRESET_MENU_STRING)
+@@ -840,6 +843,9 @@
+       (*current_term->shutdown)();
+       current_term = term_table; /* assumption: console is first */
+     }
++
++  if (silent_grub)
++    setcursor(0);
+   
+   while (1)
+     {

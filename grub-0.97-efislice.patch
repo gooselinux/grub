@@ -1,0 +1,21 @@
+diff -up grub-0.97/stage2/pc_slice.h~ grub-0.97/stage2/pc_slice.h
+--- grub-0.97/stage2/pc_slice.h~	2009-03-30 21:21:04.000000000 +0100
++++ grub-0.97/stage2/pc_slice.h	2009-03-30 21:26:17.000000000 +0100
+@@ -116,6 +116,7 @@
+ #define PC_SLICE_TYPE_VSTAFS		0x9e
+ #define PC_SLICE_TYPE_DELL_UTIL		0xde
+ #define PC_SLICE_TYPE_GPT              0xee
++#define PC_SLICE_TYPE_EFI		0xef
+ #define PC_SLICE_TYPE_LINUX_RAID	0xfd
+ 
+ 
+@@ -130,7 +131,8 @@
+      || _type == PC_SLICE_TYPE_FAT16_LBA \
+      || _type == PC_SLICE_TYPE_FAT32 \
+      || _type == PC_SLICE_TYPE_FAT32_LBA \
+-     || _type == PC_SLICE_TYPE_DELL_UTIL; })
++     || _type == PC_SLICE_TYPE_DELL_UTIL \
++     || _type == PC_SLICE_TYPE_EFI; })
+ 
+ #define IS_PC_SLICE_TYPE_EXTENDED(type)	\
+   (((type) == PC_SLICE_TYPE_EXTENDED)	\
